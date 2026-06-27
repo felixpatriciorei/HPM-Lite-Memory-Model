@@ -4,14 +4,109 @@ import argparse
 import csv
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from hpm_lite.train import run_training
+
+
+VALID_MODELS = {"local", "hpm_lite"}
+MODEL_SEED_OFFSETS = {"local": 0, "hpm_lite": 1}
+
+
+SUMMARY_COLUMNS = [
+    "model",
+    "task",
+    "write_mode",
+    "seq_len",
+    "window",
+    "seed",
+    "batch_size",
+    "steps",
+    "d_model",
+    "layers",
+    "heads",
+    "eval_answer_exact",
+    "eval_answer_ce",
+    "eval_retrieval_top1",
+    "eval_retrieval_topk",
+    "eval_avg_written_slots",
+    "eval_true_fact_written_rate",
+    "eval_false_write_rate",
+    "eval_missed_fact_rate",
+    "eval_retrieval_margin",
+    "parameters",
+    "train_wall_time_sec",
+    "examples_per_sec_recent",
+    "eval_examples_per_sec",
+    "peak_vram_mb",
+    "run_dir",
+    "step_log_path",
+]
+
+
+RAW_SUMMARY_COLUMNS = [
+    "run_id",
+    "model",
+    "task",
+    "write_mode",
+    "seq_len",
+    "window",
+    "seed",
+    "batch_size",
+    "steps",
+    "d_model",
+    "layers",
+    "heads",
+    "parameters",
+    "device",
+    "eval_answer_exact",
+    "eval_answer_ce",
+    "eval_retrieval_top1",
+    "eval_retrieval_topk",
+    "eval_true_fact_written_rate",
+    "eval_false_write_rate",
+    "eval_missed_fact_rate",
+    "eval_avg_written_slots",
+    "eval_retrieval_margin",
+    "train_wall_time_sec",
+    "examples_per_sec_recent",
+    "eval_examples_per_sec",
+    "peak_vram_mb",
+    "run_dir",
+    "step_log_path",
+]
+
+
+def parse_models(value: str) -> list[str]:
+    models = [part.strip() for part in value.split(",") if part.strip()]
+    if not models:
+        raise argparse.ArgumentTypeError("--models must include at least one model")
+    invalid = [model for model in models if model not in VALID_MODELS]
+    if invalid:
+        valid = ",".join(sorted(VALID_MODELS))
+        raise argparse.ArgumentTypeError(f"invalid model(s): {','.join(invalid)}; valid choices: {valid}")
+    # Preserve user order while removing duplicates.
+    deduped: list[str] = []
+    for model in models:
+        if model not in deduped:
+            deduped.append(model)
+    return deduped
+
+
+def str_to_bool_arg(value: str) -> bool:
+    lowered = value.lower()
+    if lowered in {"1", "true", "yes", "y", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"expected boolean value, got {value!r}")
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the exact HPM-Lite Memory Model comparison from the project brief."
     )
+    parser.add_argument("--models", type=parse_models, default=parse_models("local,hpm_lite"))
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--seq-len", type=int, default=512)
     parser.add_argument("--window", type=int, default=256)
@@ -28,80 +123,105 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--write-mode", choices=["oracle", "learned"], default="oracle")
     parser.add_argument("--lambda-writer", type=float, default=0.1)
     parser.add_argument("--learned-writer-teacher-forcing-steps", type=int, default=50)
+    parser.add_argument("--log-every", type=int, default=0)
+    parser.add_argument("--save-step-log", action="store_true")
+    parser.add_argument("--record-vram", action="store_true")
+    parser.add_argument("--summary-csv", type=str, default="results/raw/run_summary.csv")
+    parser.add_argument("--save-checkpoint", type=str_to_bool_arg, default=True)
     return parser
+
+
+def append_csv_rows(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not path.exists()
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        for row in rows:
+            writer.writerow({column: row.get(column, "") for column in fieldnames})
+
+
+def write_csv_rows(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({column: row.get(column, "") for column in fieldnames})
+
+
+def make_training_args(args: argparse.Namespace, model: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        model=model,
+        task="kv",
+        seq_len=args.seq_len,
+        window=args.window,
+        batch_size=args.batch_size,
+        steps=args.steps,
+        eval_every=args.log_every if args.log_every and args.log_every > 0 else max(1, args.steps),
+        eval_batches=10,
+        d_model=args.d_model,
+        layers=args.layers,
+        heads=args.heads,
+        lr=3.0e-4,
+        seed=args.seed + MODEL_SEED_OFFSETS[model],
+        device=args.device,
+        lambda_ret=0.1,
+        lambda_writer=args.lambda_writer,
+        learned_writer_teacher_forcing_steps=args.learned_writer_teacher_forcing_steps,
+        top_k=1,
+        memory_null_slot=args.memory_null_slot,
+        null_score_init=args.null_score_init,
+        memory_control="normal",
+        write_mode=args.write_mode if model == "hpm_lite" else "oracle",
+        oracle_memory=True,
+        num_facts=args.num_facts,
+        repeated_keys=False,
+        similar_values=False,
+        distractor_fact_spans=0,
+        query_key_noise_only=False,
+        fact_order="random",
+        out_dir=args.out_dir,
+        save_checkpoint=args.save_checkpoint,
+        log_every=args.log_every,
+        save_step_log=args.save_step_log,
+        record_vram=args.record_vram,
+    )
+
+
+def row_with_run_id(row: dict[str, Any]) -> dict[str, Any]:
+    run_dir = str(row.get("run_dir", ""))
+    run_id = Path(run_dir).name if run_dir else ""
+    return {"run_id": run_id, **row}
 
 
 def main() -> None:
     args = build_arg_parser().parse_args()
-    rows = []
-    for offset, model in enumerate(["local", "hpm_lite"]):
-        rows.append(
-            run_training(
-                SimpleNamespace(
-                    model=model,
-                    task="kv",
-                    seq_len=args.seq_len,
-                    window=args.window,
-                    batch_size=args.batch_size,
-                    steps=args.steps,
-                    eval_every=max(1, args.steps),
-                    eval_batches=10,
-                    d_model=args.d_model,
-                    layers=args.layers,
-                    heads=args.heads,
-                    lr=3.0e-4,
-                    seed=args.seed + offset,
-                    device=args.device,
-                    lambda_ret=0.1,
-                    lambda_writer=args.lambda_writer,
-                    learned_writer_teacher_forcing_steps=args.learned_writer_teacher_forcing_steps,
-                    top_k=1,
-                    memory_null_slot=args.memory_null_slot,
-                    null_score_init=args.null_score_init,
-                    memory_control="normal",
-                    write_mode=args.write_mode if model == "hpm_lite" else "oracle",
-                    oracle_memory=True,
-                    num_facts=args.num_facts,
-                    repeated_keys=False,
-                    similar_values=False,
-                    distractor_fact_spans=0,
-                    query_key_noise_only=False,
-                    fact_order="random",
-                    out_dir=args.out_dir,
-                    save_checkpoint=True,
-                )
-            )
-        )
+    rows: list[dict[str, Any]] = []
+    for model in args.models:
+        rows.append(run_training(make_training_args(args, model)))
 
     out_path = Path(args.out_dir) / "memory_model_summary.csv"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    columns = [
-        "model",
-        "eval_answer_exact",
-        "eval_answer_ce",
-        "eval_retrieval_top1",
-        "eval_retrieval_topk",
-        "eval_avg_written_slots",
-        "eval_true_fact_written_rate",
-        "eval_false_write_rate",
-        "eval_missed_fact_rate",
-        "parameters",
-        "train_wall_time_sec",
-        "run_dir",
-    ]
-    with out_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({column: row.get(column, "") for column in columns})
+    write_csv_rows(out_path, SUMMARY_COLUMNS, rows)
 
-    local = next(row for row in rows if row["model"] == "local")
-    hpm = next(row for row in rows if row["model"] == "hpm_lite")
-    gain = float(hpm.get("eval_answer_exact", 0.0)) - float(local.get("eval_answer_exact", 0.0))
+    if args.summary_csv:
+        append_csv_rows(Path(args.summary_csv), RAW_SUMMARY_COLUMNS, [row_with_run_id(row) for row in rows])
+
     print(f"wrote {out_path}")
-    print(f"local exact={float(local.get('eval_answer_exact', 0.0)):.4f}")
-    print(f"hpm_lite exact={float(hpm.get('eval_answer_exact', 0.0)):.4f}")
-    print(f"exact gain={gain:.4f}")
+    for row in rows:
+        exact = float(row.get("eval_answer_exact", 0.0))
+        ce = float(row.get("eval_answer_ce", 0.0))
+        print(f"{row['model']} exact={exact:.4f} ce={ce:.4f}")
+
+    by_model = {row["model"]: row for row in rows}
+    if "local" in by_model and "hpm_lite" in by_model:
+        local = by_model["local"]
+        hpm = by_model["hpm_lite"]
+        gain = float(hpm.get("eval_answer_exact", 0.0)) - float(local.get("eval_answer_exact", 0.0))
+        print(f"exact gain={gain:.4f}")
 
 
 if __name__ == "__main__":

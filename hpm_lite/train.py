@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import time
@@ -114,6 +115,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fact-order", choices=["random", "query_last"], default="random")
     parser.add_argument("--out-dir", type=str, default="runs")
     parser.add_argument("--save-checkpoint", type=str_to_bool, default=True)
+    parser.add_argument("--log-every", type=int, default=0)
+    parser.add_argument("--save-step-log", type=str_to_bool, default=False)
+    parser.add_argument("--record-vram", type=str_to_bool, default=False)
     return parser
 
 
@@ -122,6 +126,66 @@ def args_with_defaults(args: argparse.Namespace | SimpleNamespace) -> argparse.N
     merged = {**defaults, **vars(args)}
     return argparse.Namespace(**merged)
 
+
+
+
+def peak_vram_mb(device: torch.device) -> float:
+    """Return peak CUDA memory allocated in MiB, or 0.0 on CPU/non-CUDA."""
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return 0.0
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    return float(torch.cuda.max_memory_allocated(index) / (1024 ** 2))
+
+
+def reset_peak_vram(device: torch.device) -> None:
+    if device.type == "cuda" and torch.cuda.is_available():
+        index = device.index if device.index is not None else torch.cuda.current_device()
+        torch.cuda.reset_peak_memory_stats(index)
+
+
+def append_csv_row(path: Path, fieldnames: list[str], row: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not path.exists()
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerow({name: row.get(name, "") for name in fieldnames})
+
+
+STEP_LOG_COLUMNS = [
+    "run_id",
+    "step",
+    "model",
+    "task",
+    "write_mode",
+    "seq_len",
+    "window",
+    "seed",
+    "batch_size",
+    "train_loss",
+    "train_answer_ce",
+    "train_answer_exact",
+    "train_retrieval_loss",
+    "train_writer_loss",
+    "train_retrieval_top1",
+    "train_retrieval_topk",
+    "train_retrieval_margin",
+    "train_writer_true_fact_written_rate",
+    "train_writer_false_write_rate",
+    "train_writer_missed_fact_rate",
+    "eval_answer_exact",
+    "eval_answer_ce",
+    "eval_retrieval_top1",
+    "eval_retrieval_topk",
+    "eval_retrieval_margin",
+    "eval_true_fact_written_rate",
+    "eval_false_write_rate",
+    "eval_missed_fact_rate",
+    "eval_avg_written_slots",
+    "examples_per_sec_recent",
+    "peak_vram_mb",
+]
 
 def make_model(args: argparse.Namespace, device: torch.device) -> HpmLiteModel:
     config = HpmLiteConfig(
@@ -160,6 +224,8 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
     args = args_with_defaults(args)
     set_seed(args.seed)
     device = resolve_device(args.device)
+    if args.record_vram:
+        reset_peak_vram(device)
 
     train_dataset = FactRecallDataset(
         FactRecallConfig(
@@ -194,7 +260,11 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
     model = make_model(args, device)
     optimizer = TinyAdamW(model.parameters(), lr=args.lr)
 
+    if args.log_every and args.log_every > 0:
+        args.eval_every = args.log_every
+
     run_dir = ensure_dir(Path(args.out_dir) / f"{timestamp()}_{args.model}_{args.task}_seed{args.seed}")
+    step_log_path = run_dir / "step_log.csv"
     start_time = time.perf_counter()
     last_time = start_time
     final_metrics: Dict[str, Any] = {}
@@ -266,6 +336,7 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
                 write_mode=args.write_mode,
                 use_learned_writer=learned_writer,
             )
+            peak_vram = peak_vram_mb(device) if args.record_vram else 0.0
             final_metrics = {
                 "step": step,
                 "train_loss": float(loss.item()),
@@ -274,10 +345,25 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
                 "train_retrieval_loss": float(retrieval_loss.item()),
                 "train_writer_loss": float(writer_loss.item()),
                 "examples_per_sec_recent": examples_per_sec,
+                "peak_vram_mb": peak_vram,
                 **{f"train_writer_{key}": value for key, value in write_stats.items()},
                 **{f"train_{key}": value for key, value in ret.items()},
                 **{f"eval_{key}": value for key, value in eval_metrics.items()},
             }
+            if args.save_step_log:
+                step_row = {
+                    "run_id": run_dir.name,
+                    "model": args.model,
+                    "task": args.task,
+                    "write_mode": args.write_mode,
+                    "seq_len": args.seq_len,
+                    "window": args.window,
+                    "seed": args.seed,
+                    "batch_size": args.batch_size,
+                    **final_metrics,
+                }
+                append_csv_row(step_log_path, STEP_LOG_COLUMNS, step_row)
+
             compact = {
                 "step": step,
                 "loss": round(final_metrics["train_loss"], 4),
@@ -304,6 +390,8 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
             "parameters": count_parameters(model),
             "memory_slots_per_sample": 0 if args.model == "local" else train_dataset.config.num_facts,
             "train_wall_time_sec": total_time,
+            "peak_vram_mb": peak_vram_mb(device) if args.record_vram else 0.0,
+            "step_log_path": str(step_log_path) if args.save_step_log else "",
             "lambda_writer": args.lambda_writer,
             "learned_writer_teacher_forcing_steps": args.learned_writer_teacher_forcing_steps,
             "run_dir": str(run_dir),
