@@ -39,12 +39,51 @@ class LocalCausalSelfAttention(nn.Module):
         qkv = qkv.view(bsz, seq_len, 3, self.heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-        mask = make_local_causal_mask(seq_len, self.window, x.device)
-        scores = scores.masked_fill(~mask[None, None, :, :], torch.finfo(scores.dtype).min)
-        attn = torch.softmax(scores, dim=-1)
-        attn = self.dropout(attn)
-        y = torch.matmul(attn, v)
+        # True sliding-window causal attention.
+        #
+        # The previous implementation formed a dense [B, H, T, T] score
+        # matrix and then masked out non-local positions. That is logically
+        # local attention, but its memory cost is still quadratic in T. At
+        # T=4096, B=32, H=4, the score tensor alone is about 8 GiB.
+        #
+        # This chunked gather computes only the last ``window`` keys for each
+        # query, so attention memory is O(B * H * T * window), not O(B*H*T*T).
+        radius = min(max(int(self.window), 0), max(seq_len - 1, 0))
+        chunk_size = 512
+        outputs = []
+        scale = 1.0 / math.sqrt(self.head_dim)
+
+        for start in range(0, seq_len, chunk_size):
+            end = min(seq_len, start + chunk_size)
+            chunk_len = end - start
+            positions = torch.arange(start, end, device=x.device)
+            offsets = torch.arange(radius, -1, -1, device=x.device)
+            key_positions = positions[:, None] - offsets[None, :]
+            valid = key_positions >= 0
+            gather_positions = key_positions.clamp_min(0)
+
+            gather_index = gather_positions[None, None, :, :, None].expand(
+                bsz, self.heads, chunk_len, radius + 1, self.head_dim
+            )
+            k_chunk = torch.gather(
+                k.unsqueeze(2).expand(bsz, self.heads, chunk_len, seq_len, self.head_dim),
+                dim=3,
+                index=gather_index,
+            )
+            v_chunk = torch.gather(
+                v.unsqueeze(2).expand(bsz, self.heads, chunk_len, seq_len, self.head_dim),
+                dim=3,
+                index=gather_index,
+            )
+
+            q_chunk = q[:, :, start:end, :]
+            scores = torch.sum(q_chunk.unsqueeze(-2) * k_chunk, dim=-1) * scale
+            scores = scores.masked_fill(~valid[None, None, :, :], torch.finfo(scores.dtype).min)
+            attn = torch.softmax(scores, dim=-1)
+            attn = self.dropout(attn)
+            outputs.append(torch.sum(attn.unsqueeze(-1) * v_chunk, dim=-2))
+
+        y = torch.cat(outputs, dim=2)
         y = y.transpose(1, 2).contiguous().view(bsz, seq_len, self.d_model)
         return self.out(y)
 

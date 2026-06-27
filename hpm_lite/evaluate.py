@@ -187,6 +187,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--top-k", type=int, default=1)
+    parser.add_argument("--memory-null-slot", type=str_to_bool, default=False)
+    parser.add_argument("--null-score-init", type=float, default=0.0)
     parser.add_argument("--oracle-memory", type=str_to_bool, default=True)
     parser.add_argument(
         "--memory-control",
@@ -212,6 +214,8 @@ def config_from_args(args: argparse.Namespace) -> HpmLiteConfig:
         heads=args.heads,
         window=args.window,
         max_seq_len=max(2048, max(parse_seq_lens(getattr(args, "seq_lens", "1024")))),
+        use_null_slot=args.memory_null_slot,
+        null_score_init=args.null_score_init,
     )
 
 
