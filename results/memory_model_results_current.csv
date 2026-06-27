@@ -1,0 +1,5 @@
+seq_len,window,local_exact,hpm_exact,local_params,hpm_params,local_train_sec,hpm_train_sec,notes,gain
+512,256,0.00625,1.0,1375490,1784453,20.4724,25.5062,"Initial CUDA sanity run; d_model=192, layers=2, steps=200.",0.99375
+2048,256,0.0,1.0,1375682,1784645,1807.67,2481.45,CUDA run; uploaded hpm_lite metrics show retrieval_top1=1.0.,1.0
+4096,256,0.0,1.0,784386,966918,1837.2026,1749.3045,"Null-slot/sliding-attention long-distance run; d_model=128, layers=1, steps=150, batch=4.",1.0
+8192,256,0.0,1.0,944642,1047750,79.5683,80.489,"Null-slot/sliding-attention long-distance run; d_model=96, layers=1, steps=80, batch=2.",1.0
