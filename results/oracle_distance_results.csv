@@ -1,0 +1,5 @@
+distance,window,local_exact,hpm_exact,local_ce,hpm_ce,local_params,hpm_params,setting
+512,256,0.00625,1.0,7.3664,0.0,1375490,1784453,oracle
+2048,256,0.0,1.0,7.3532,0.0,1375682,1784645,oracle
+4096,256,0.0,1.0,13.7063,0.0,784386,966918,null_slot
+8192,256,0.0,1.0,23.8708,0.0,944642,1047750,null_slot
