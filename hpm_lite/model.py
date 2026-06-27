@@ -7,7 +7,7 @@ from typing import Dict, Optional
 import torch
 from torch import nn
 
-from .data import VOCAB_SIZE
+from .data import ANSWER, QUERY, VOCAB_SIZE
 from .memory import EpisodicMemory, HebbianMemory
 
 
@@ -143,6 +143,123 @@ class GruRecurrentState(nn.Module):
         return self.out(self.dropout(states))
 
 
+
+class SupervisedMemoryWriter(nn.Module):
+    """Supervised first-stage writer for removing oracle memory writes.
+
+    The writer predicts which pre-query token positions should start a memory
+    slot. For the current synthetic KV task, a selected start position ``p``
+    writes the pair ``[p, p + 1]`` as key/value token positions. The selection
+    itself is hard top-k and therefore not differentiated through; the writer
+    is trained with a BCE objective against synthetic support labels. This is
+    intentionally a bridge between parser/oracle writes and a later fully
+    autonomous write policy.
+    """
+
+    def __init__(self, d_model: int):
+        super().__init__()
+        self.scorer = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, 1),
+        )
+
+    def forward(
+        self,
+        hidden: torch.Tensor,
+        input_ids: torch.Tensor,
+        query_key_positions: torch.Tensor,
+        oracle_memory_token_positions: torch.Tensor,
+        oracle_memory_mask: torch.Tensor,
+        max_slots: int,
+    ) -> Dict[str, torch.Tensor]:
+        bsz, seq_len, _ = hidden.shape
+        device = hidden.device
+        candidate_len = max(seq_len - 1, 1)
+        logits = self.scorer(hidden[:, :candidate_len, :]).squeeze(-1)
+
+        positions = torch.arange(candidate_len, device=device)[None, :]
+        query_positions = query_key_positions[:, None] - 1
+        valid = (positions + 1 < query_positions) & (input_ids[:, :candidate_len] != QUERY) & (input_ids[:, :candidate_len] != ANSWER)
+
+        labels = torch.zeros_like(logits)
+        starts = oracle_memory_token_positions[:, :, 0]
+        safe_starts = starts.clamp(0, candidate_len - 1)
+        labels.scatter_(1, safe_starts, oracle_memory_mask.float())
+        labels = labels * valid.float()
+
+        if valid.any():
+            valid_labels = labels[valid]
+            valid_logits = logits[valid]
+            pos = valid_labels.sum().clamp_min(1.0)
+            neg = (valid_labels.numel() - valid_labels.sum()).clamp_min(1.0)
+            pos_weight = (neg / pos).detach().clamp(1.0, 100.0)
+            writer_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+                valid_logits,
+                valid_labels,
+                pos_weight=pos_weight,
+            )
+        else:
+            writer_loss = logits.new_zeros(())
+
+        masked_logits = logits.masked_fill(~valid, torch.finfo(logits.dtype).min)
+        slots = min(max_slots, candidate_len)
+        top_logits, starts = torch.topk(masked_logits, k=slots, dim=-1)
+        memory_mask = top_logits > torch.finfo(logits.dtype).min / 2
+        if slots < max_slots:
+            pad_slots = max_slots - slots
+            starts = torch.cat([starts, starts.new_zeros(bsz, pad_slots)], dim=1)
+            memory_mask = torch.cat([memory_mask, torch.zeros(bsz, pad_slots, device=device, dtype=torch.bool)], dim=1)
+            top_logits = torch.cat([top_logits, top_logits.new_full((bsz, pad_slots), torch.finfo(logits.dtype).min)], dim=1)
+
+        memory_token_positions = torch.stack([starts, (starts + 1).clamp_max(seq_len - 1)], dim=-1)
+        write_probs = torch.sigmoid(logits)
+        predicted_positive = (write_probs >= 0.5) & valid
+        tp = ((predicted_positive & (labels.bool()))).float().sum()
+        fp = ((predicted_positive & ~(labels.bool()))).float().sum()
+        fn = (((~predicted_positive) & labels.bool())).float().sum()
+
+        return {
+            "writer_logits": logits,
+            "writer_labels": labels,
+            "writer_valid_mask": valid,
+            "writer_loss": writer_loss,
+            "writer_memory_token_positions": memory_token_positions,
+            "writer_memory_mask": memory_mask,
+            "writer_top_logits": top_logits,
+            "writer_precision": tp / (tp + fp).clamp_min(1.0),
+            "writer_recall": tp / (tp + fn).clamp_min(1.0),
+        }
+
+
+def match_hop_positive_indices(
+    active_memory_token_positions: torch.Tensor,
+    active_memory_mask: torch.Tensor,
+    oracle_memory_token_positions: torch.Tensor,
+    oracle_hop_positive_memory_indices: Optional[torch.Tensor],
+) -> Optional[torch.Tensor]:
+    """Map oracle support slots to slots selected by the learned writer."""
+
+    if oracle_hop_positive_memory_indices is None:
+        return None
+    matched = torch.full_like(oracle_hop_positive_memory_indices, -100)
+    bsz, slots, _ = active_memory_token_positions.shape
+    for b in range(bsz):
+        for hop in range(oracle_hop_positive_memory_indices.size(1)):
+            oracle_slot = int(oracle_hop_positive_memory_indices[b, hop].item())
+            if oracle_slot < 0:
+                continue
+            oracle_pair = oracle_memory_token_positions[b, oracle_slot]
+            for slot in range(slots):
+                if not bool(active_memory_mask[b, slot].item()):
+                    continue
+                if torch.equal(active_memory_token_positions[b, slot], oracle_pair):
+                    matched[b, hop] = slot
+                    break
+    return matched
+
+
 class MemoryPathRouter(nn.Module):
     """alpha = softmax(W[l_t, r_t, e_t]); m_t = sum_i alpha_i path_i."""
 
@@ -180,6 +297,7 @@ class HpmLiteConfig:
     hebbian_eta: float = 1.0
     use_null_slot: bool = False
     null_score_init: float = 0.0
+    use_learned_writer: bool = False
 
 
 @dataclass
@@ -244,6 +362,7 @@ class HpmLiteModel(nn.Module):
         # The actual screenshot model: local mixer, GRU state, episodic retrieval, learned router.
         self.hpm_gru = GruRecurrentState(config.d_model, config.dropout) if config.model_type == "hpm_lite" else None
         self.router = MemoryPathRouter(config.d_model) if config.model_type == "hpm_lite" else None
+        self.writer = SupervisedMemoryWriter(config.d_model) if config.use_learned_writer and config.model_type in {"epmem", "hpm_lite"} else None
 
         if config.model_type in {"epmem", "hpm_lite"}:
             self.memory = EpisodicMemory(
@@ -301,6 +420,8 @@ class HpmLiteModel(nn.Module):
         task: str = "kv",
         hop_positive_memory_indices: Optional[torch.Tensor] = None,
         memory_control: str = "normal",
+        use_learned_writer: bool = False,
+        learned_writer_teacher_forcing: bool = False,
     ) -> Dict[str, torch.Tensor | Dict[str, torch.Tensor]]:
         bsz, seq_len = input_ids.shape
         if seq_len > self.config.max_seq_len:
@@ -315,6 +436,34 @@ class HpmLiteModel(nn.Module):
             local_state = block(local_state)
 
         retrieval_info: Dict[str, torch.Tensor] = {}
+        writer_info: Dict[str, torch.Tensor] = {}
+        active_memory_token_positions = memory_token_positions
+        active_memory_mask = memory_mask
+        active_hop_positive_memory_indices = hop_positive_memory_indices
+
+        if use_learned_writer:
+            if self.writer is None:
+                raise RuntimeError("use_learned_writer=True requires HpmLiteConfig(use_learned_writer=True)")
+            if memory_token_positions is None or memory_mask is None or query_key_positions is None:
+                raise ValueError("learned writer requires oracle memory positions for supervised labels")
+            writer_info = self.writer(
+                hidden=local_state,
+                input_ids=input_ids,
+                query_key_positions=query_key_positions,
+                oracle_memory_token_positions=memory_token_positions,
+                oracle_memory_mask=memory_mask,
+                max_slots=memory_token_positions.size(1),
+            )
+            if not learned_writer_teacher_forcing:
+                active_memory_token_positions = writer_info["writer_memory_token_positions"]
+                active_memory_mask = writer_info["writer_memory_mask"]
+                active_hop_positive_memory_indices = match_hop_positive_indices(
+                    active_memory_token_positions=active_memory_token_positions,
+                    active_memory_mask=active_memory_mask,
+                    oracle_memory_token_positions=memory_token_positions,
+                    oracle_hop_positive_memory_indices=hop_positive_memory_indices,
+                )
+
         state = local_state
 
         if self.config.model_type == "recurrent" and self.recurrent is not None:
@@ -328,35 +477,36 @@ class HpmLiteModel(nn.Module):
 
             recurrent_state = self.hpm_gru(embedded)
             episodic_state = torch.zeros_like(local_state)
-            retrieved, retrieval_info = self._retrieve_answer_memory(
+            retrieved, memory_info = self._retrieve_answer_memory(
                 token_emb=token_emb,
-                memory_token_positions=memory_token_positions,
-                memory_mask=memory_mask,
+                memory_token_positions=active_memory_token_positions,
+                memory_mask=active_memory_mask,
                 query_key_positions=query_key_positions,
                 top_k=top_k,
                 task=task,
-                hop_positive_memory_indices=hop_positive_memory_indices,
+                hop_positive_memory_indices=active_hop_positive_memory_indices,
                 memory_control=memory_control,
             )
             batch = torch.arange(bsz, device=input_ids.device)
             episodic_state[batch, answer_positions] = retrieved
             state, router_weights = self.router(local_state, recurrent_state, episodic_state)
-            retrieval_info = dict(retrieval_info)
+            retrieval_info = {**writer_info, **memory_info}
             retrieval_info["router_weights"] = router_weights
 
         elif self.memory is not None:
             if answer_positions is None:
                 raise ValueError("memory models require answer_positions")
-            retrieved, retrieval_info = self._retrieve_answer_memory(
+            retrieved, memory_info = self._retrieve_answer_memory(
                 token_emb=token_emb,
-                memory_token_positions=memory_token_positions,
-                memory_mask=memory_mask,
+                memory_token_positions=active_memory_token_positions,
+                memory_mask=active_memory_mask,
                 query_key_positions=query_key_positions,
                 top_k=top_k,
                 task=task,
-                hop_positive_memory_indices=hop_positive_memory_indices,
+                hop_positive_memory_indices=active_hop_positive_memory_indices,
                 memory_control=memory_control,
             )
+            retrieval_info = {**writer_info, **memory_info}
             batch = torch.arange(bsz, device=input_ids.device)
             state = local_state.clone()
             state[batch, answer_positions] = state[batch, answer_positions] + self.gamma_e * retrieved

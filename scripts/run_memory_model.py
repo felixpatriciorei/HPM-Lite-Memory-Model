@@ -25,6 +25,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", type=str, default="runs/memory_model")
     parser.add_argument("--memory-null-slot", action="store_true")
     parser.add_argument("--null-score-init", type=float, default=0.0)
+    parser.add_argument("--write-mode", choices=["oracle", "learned"], default="oracle")
+    parser.add_argument("--lambda-writer", type=float, default=0.1)
+    parser.add_argument("--learned-writer-teacher-forcing-steps", type=int, default=50)
     return parser
 
 
@@ -50,11 +53,13 @@ def main() -> None:
                     seed=args.seed + offset,
                     device=args.device,
                     lambda_ret=0.1,
+                    lambda_writer=args.lambda_writer,
+                    learned_writer_teacher_forcing_steps=args.learned_writer_teacher_forcing_steps,
                     top_k=1,
                     memory_null_slot=args.memory_null_slot,
                     null_score_init=args.null_score_init,
                     memory_control="normal",
-                    write_mode="oracle",
+                    write_mode=args.write_mode if model == "hpm_lite" else "oracle",
                     oracle_memory=True,
                     num_facts=args.num_facts,
                     repeated_keys=False,
@@ -76,6 +81,10 @@ def main() -> None:
         "eval_answer_ce",
         "eval_retrieval_top1",
         "eval_retrieval_topk",
+        "eval_avg_written_slots",
+        "eval_true_fact_written_rate",
+        "eval_false_write_rate",
+        "eval_missed_fact_rate",
         "parameters",
         "train_wall_time_sec",
         "run_dir",

@@ -20,7 +20,7 @@ from .metrics import (
 )
 from .model import HpmLiteConfig, HpmLiteModel
 from .utils import resolve_device, set_seed, str_to_bool
-from .write_modes import apply_write_mode
+from .write_modes import apply_write_mode, batch_from_memory_selection, writer_metrics
 
 
 @torch.no_grad()
@@ -34,6 +34,7 @@ def evaluate_batches(
     top_k: int,
     memory_control: str = "normal",
     write_mode: str = "oracle",
+    use_learned_writer: bool = False,
 ) -> Dict[str, float]:
     model.eval()
     start_time = time.perf_counter()
@@ -74,7 +75,17 @@ def evaluate_batches(
             task=task,
             hop_positive_memory_indices=batch["hop_positive_memory_indices"],
             memory_control=memory_control,
+            use_learned_writer=use_learned_writer,
+            learned_writer_teacher_forcing=False,
         )
+        metric_batch = batch
+        if use_learned_writer and "writer_memory_token_positions" in output["retrieval"]:
+            metric_batch = batch_from_memory_selection(
+                batch,
+                output["retrieval"]["writer_memory_token_positions"],
+                output["retrieval"]["writer_memory_mask"],
+            )
+            write_stats = writer_metrics(batch, metric_batch)
         logits = output["logits"]
         ce = answer_cross_entropy(logits, batch["target_ids"], batch["loss_mask"])
         acc = answer_span_exact_accuracy(logits, batch["target_ids"], batch["loss_mask"])
@@ -104,8 +115,8 @@ def evaluate_batches(
 
         ret = retrieval_metrics(
             output["retrieval"],
-            positive_indices=batch["positive_memory_indices"],
-            positive_mask=batch.get("positive_memory_mask"),
+            positive_indices=metric_batch["positive_memory_indices"],
+            positive_mask=metric_batch.get("positive_memory_mask"),
         )
         if ret:
             ret_top1_sum += ret["retrieval_top1"] * batch_size
@@ -114,8 +125,8 @@ def evaluate_batches(
             ret_count += batch_size
             correct_retrieval = retrieval_correct_mask(
                 output["retrieval"],
-                positive_indices=batch["positive_memory_indices"],
-                positive_mask=batch.get("positive_memory_mask"),
+                positive_indices=metric_batch["positive_memory_indices"],
+                positive_mask=metric_batch.get("positive_memory_mask"),
             )
             if correct_retrieval is not None and correct_retrieval.any():
                 reasoning_sum += exact_mask[correct_retrieval].float().sum().item()
@@ -195,7 +206,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["normal", "shuffle_values", "shuffled_values", "random_keys", "corrupt_values", "no_retrieval"],
         default="normal",
     )
-    parser.add_argument("--write-mode", choices=["oracle", "fact_token", "random_write"], default="oracle")
+    parser.add_argument("--write-mode", choices=["oracle", "fact_token", "random_write", "learned"], default="oracle")
     parser.add_argument("--num-facts", type=int, default=4)
     parser.add_argument("--repeated-keys", type=str_to_bool, default=False)
     parser.add_argument("--similar-values", type=str_to_bool, default=False)
@@ -216,6 +227,7 @@ def config_from_args(args: argparse.Namespace) -> HpmLiteConfig:
         max_seq_len=max(2048, max(parse_seq_lens(getattr(args, "seq_lens", "1024")))),
         use_null_slot=args.memory_null_slot,
         null_score_init=args.null_score_init,
+        use_learned_writer=args.write_mode == "learned",
     )
 
 

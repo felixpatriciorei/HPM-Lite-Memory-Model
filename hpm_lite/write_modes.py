@@ -6,7 +6,7 @@ import torch
 
 from .data import ANSWER, FACT, IF, QUERY
 
-WRITE_MODES = {"oracle", "fact_token", "random_write"}
+WRITE_MODES = {"oracle", "fact_token", "random_write", "learned"}
 
 
 def parse_write_modes(value: str) -> list[str]:
@@ -21,6 +21,11 @@ def apply_write_mode(batch: Dict[str, torch.Tensor], write_mode: str) -> Tuple[D
     if write_mode not in WRITE_MODES:
         raise ValueError(f"unknown write_mode: {write_mode}")
     if write_mode == "oracle":
+        return clone_batch(batch), writer_metrics(batch, batch)
+    if write_mode == "learned":
+        # Learned writes are selected inside the model from learned scores.
+        # Return the oracle batch here because the writer still needs support
+        # labels for supervised warm-start training.
         return clone_batch(batch), writer_metrics(batch, batch)
 
     if write_mode == "fact_token":
@@ -120,6 +125,25 @@ def build_random_writes(batch: Dict[str, torch.Tensor], target_counts: torch.Ten
     rewritten["memory_spans"] = memory_spans
     rewritten["memory_mask"] = memory_mask
     update_positive_indices(rewritten, batch)
+    assert_pre_query_writes(rewritten)
+    return rewritten
+
+
+
+def batch_from_memory_selection(
+    oracle: Dict[str, torch.Tensor],
+    memory_token_positions: torch.Tensor,
+    memory_mask: torch.Tensor,
+) -> Dict[str, torch.Tensor]:
+    """Build a batch-style memory view from learned writer selections."""
+
+    rewritten = clone_batch(oracle)
+    rewritten["memory_token_positions"] = memory_token_positions.detach().clone()
+    rewritten["memory_mask"] = memory_mask.detach().clone()
+    rewritten["memory_spans"] = memory_token_positions.detach().clone()
+    condition_template = oracle.get("memory_condition_positions", oracle["memory_token_positions"][:, :, 0])
+    rewritten["memory_condition_positions"] = torch.full_like(condition_template, -1)
+    update_positive_indices(rewritten, oracle)
     assert_pre_query_writes(rewritten)
     return rewritten
 

@@ -16,7 +16,7 @@ from .evaluate import evaluate_batches
 from .metrics import answer_cross_entropy, answer_span_exact_accuracy, count_parameters, retrieval_metrics
 from .model import HpmLiteConfig, HpmLiteModel
 from .utils import ensure_dir, resolve_device, set_seed, str_to_bool, timestamp, write_json
-from .write_modes import apply_write_mode
+from .write_modes import apply_write_mode, batch_from_memory_selection, writer_metrics
 
 
 class TinyAdamW:
@@ -94,6 +94,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--lambda-ret", type=float, default=0.1)
+    parser.add_argument("--lambda-writer", type=float, default=0.1)
+    parser.add_argument("--learned-writer-teacher-forcing-steps", type=int, default=50)
     parser.add_argument("--top-k", type=int, default=1)
     parser.add_argument("--memory-null-slot", type=str_to_bool, default=False)
     parser.add_argument("--null-score-init", type=float, default=0.0)
@@ -102,7 +104,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["normal", "shuffle_values", "shuffled_values", "random_keys", "corrupt_values", "no_retrieval"],
         default="normal",
     )
-    parser.add_argument("--write-mode", choices=["oracle", "fact_token", "random_write"], default="oracle")
+    parser.add_argument("--write-mode", choices=["oracle", "fact_token", "random_write", "learned"], default="oracle")
     parser.add_argument("--oracle-memory", type=str_to_bool, default=True)
     parser.add_argument("--num-facts", type=int, default=4)
     parser.add_argument("--repeated-keys", type=str_to_bool, default=False)
@@ -132,6 +134,7 @@ def make_model(args: argparse.Namespace, device: torch.device) -> HpmLiteModel:
         max_seq_len=max(2048, args.seq_len + 1),
         use_null_slot=args.memory_null_slot,
         null_score_init=args.null_score_init,
+        use_learned_writer=args.write_mode == "learned",
     )
     return HpmLiteModel(config).to(device)
 
@@ -148,6 +151,8 @@ def forward_batch(model: HpmLiteModel, batch: Dict[str, torch.Tensor], args: arg
         task=args.task,
         hop_positive_memory_indices=batch["hop_positive_memory_indices"],
         memory_control=args.memory_control,
+        use_learned_writer=args.write_mode == "learned",
+        learned_writer_teacher_forcing=False,
     )
 
 
@@ -198,6 +203,8 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
         model.train()
         batch = train_dataset.sample_batch(args.batch_size, device=device)
         batch, write_stats = apply_write_mode(batch, args.write_mode)
+        learned_writer = args.write_mode == "learned"
+        teacher_forcing = learned_writer and step <= args.learned_writer_teacher_forcing_steps
         output = model(
             batch["input_ids"],
             memory_token_positions=batch["memory_token_positions"],
@@ -208,11 +215,24 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
             task=args.task,
             hop_positive_memory_indices=batch["hop_positive_memory_indices"],
             memory_control=args.memory_control,
+            use_learned_writer=learned_writer,
+            learned_writer_teacher_forcing=teacher_forcing,
         )
+        metric_batch = batch
+        if learned_writer and "writer_memory_token_positions" in output["retrieval"]:
+            learned_write_batch = batch_from_memory_selection(
+                batch,
+                output["retrieval"]["writer_memory_token_positions"],
+                output["retrieval"]["writer_memory_mask"],
+            )
+            write_stats = writer_metrics(batch, learned_write_batch)
+            if not teacher_forcing:
+                metric_batch = learned_write_batch
         logits = output["logits"]
         answer_loss = answer_cross_entropy(logits, batch["target_ids"], batch["loss_mask"])
         retrieval_loss = output["retrieval"].get("retrieval_loss", logits.new_zeros(()))
-        loss = answer_loss + args.lambda_ret * retrieval_loss
+        writer_loss = output["retrieval"].get("writer_loss", logits.new_zeros(()))
+        loss = answer_loss + args.lambda_ret * retrieval_loss + args.lambda_writer * writer_loss
 
         if not torch.isfinite(loss):
             raise RuntimeError(f"non-finite loss at step {step}: {loss.item()}")
@@ -231,8 +251,8 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
             train_acc = answer_span_exact_accuracy(logits.detach(), batch["target_ids"], batch["loss_mask"])
             ret = retrieval_metrics(
                 output["retrieval"],
-                positive_indices=batch["positive_memory_indices"],
-                positive_mask=batch.get("positive_memory_mask"),
+                positive_indices=metric_batch["positive_memory_indices"],
+                positive_mask=metric_batch.get("positive_memory_mask"),
             )
             eval_metrics = evaluate_batches(
                 model=model,
@@ -244,6 +264,7 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
                 top_k=args.top_k,
                 memory_control=args.memory_control,
                 write_mode=args.write_mode,
+                use_learned_writer=learned_writer,
             )
             final_metrics = {
                 "step": step,
@@ -251,6 +272,7 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
                 "train_answer_ce": float(answer_loss.item()),
                 "train_answer_exact": float(train_acc.item()),
                 "train_retrieval_loss": float(retrieval_loss.item()),
+                "train_writer_loss": float(writer_loss.item()),
                 "examples_per_sec_recent": examples_per_sec,
                 **{f"train_writer_{key}": value for key, value in write_stats.items()},
                 **{f"train_{key}": value for key, value in ret.items()},
@@ -264,6 +286,8 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
             }
             if "eval_retrieval_top1" in final_metrics:
                 compact["eval_ret_top1"] = round(final_metrics["eval_retrieval_top1"], 4)
+            if learned_writer:
+                compact["writer_recall"] = round(final_metrics.get("train_writer_true_fact_written_rate", 0.0), 4)
             print(json.dumps(compact, sort_keys=True))
 
     total_time = time.perf_counter() - start_time
@@ -280,6 +304,8 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
             "parameters": count_parameters(model),
             "memory_slots_per_sample": 0 if args.model == "local" else train_dataset.config.num_facts,
             "train_wall_time_sec": total_time,
+            "lambda_writer": args.lambda_writer,
+            "learned_writer_teacher_forcing_steps": args.learned_writer_teacher_forcing_steps,
             "run_dir": str(run_dir),
         }
     )
