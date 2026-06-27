@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Environments
+.venv/
+venv/
+env/
+.env
+
+# Build/package
+build/
+dist/
+*.egg-info/
+
+# Experiment outputs
+runs/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.log
+*.out
+*.err
+
+# Data/debug artifacts
+*.jsonl
+*_raw.csv
+*_summary.csv
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
