@@ -10,11 +10,32 @@ def test_retrieve_topk_returns_expected_slot():
     memory_values = torch.tensor([[[10.0, 0.0, 0.0, 0.0], [0.0, 20.0, 0.0, 0.0]]])
     mask = torch.tensor([[True, True]])
 
-    retrieved, scores, top_indices, weights = retrieve_topk(query, memory_keys, memory_values, mask, top_k=1)
+    retrieved, scores, top_indices, weights, null_weight = retrieve_topk(query, memory_keys, memory_values, mask, top_k=1)
     assert top_indices.tolist() == [[1]]
     assert torch.allclose(retrieved, memory_values[:, 1, :])
     assert scores[0, 1] > scores[0, 0]
     assert torch.allclose(weights, torch.ones_like(weights))
+    assert torch.allclose(null_weight, torch.zeros_like(null_weight))
+
+
+def test_retrieve_topk_null_slot_can_absorb_bad_matches():
+    query = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+    memory_keys = torch.tensor([[[0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]])
+    memory_values = torch.tensor([[[10.0, 0.0, 0.0, 0.0], [0.0, 20.0, 0.0, 0.0]]])
+    mask = torch.tensor([[False, False]])
+
+    retrieved, _, _, weights, null_weight = retrieve_topk(
+        query,
+        memory_keys,
+        memory_values,
+        mask,
+        top_k=1,
+        use_null_slot=True,
+        null_score=torch.tensor(0.0),
+    )
+    assert weights.shape == (1, 2)
+    assert null_weight.item() > 0.999
+    assert torch.allclose(retrieved, torch.zeros_like(retrieved), atol=1e-6)
 
 
 def test_memory_module_topk_contains_expected_slot():

@@ -139,6 +139,8 @@ class HpmLiteConfig:
     dropout: float = 0.0
     hebbian_decay: float = 0.9
     hebbian_eta: float = 1.0
+    use_null_slot: bool = False
+    null_score_init: float = 0.0
 
 
 @dataclass
@@ -205,7 +207,11 @@ class HpmLiteModel(nn.Module):
         self.router = MemoryPathRouter(config.d_model) if config.model_type == "hpm_lite" else None
 
         if config.model_type in {"epmem", "hpm_lite"}:
-            self.memory = EpisodicMemory(config.d_model)
+            self.memory = EpisodicMemory(
+                config.d_model,
+                use_null_slot=config.use_null_slot,
+                null_score_init=config.null_score_init,
+            )
         elif config.model_type == "hebbian":
             self.memory = HebbianMemory(config.d_model, decay=config.hebbian_decay, eta=config.hebbian_eta)
         else:

@@ -25,8 +25,16 @@ def retrieve_topk(
     memory_values: torch.Tensor,
     memory_mask: torch.Tensor,
     top_k: int,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Brute-force top-k memory retrieval."""
+    use_null_slot: bool = False,
+    null_score: Optional[torch.Tensor] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Brute-force top-k memory retrieval.
+
+    When ``use_null_slot`` is enabled, a zero-valued null memory is appended
+    to the retrieved pool before the softmax. This prevents top-k retrieval
+    from being forced to assign probability mass to bad matches when no real
+    slot is useful.
+    """
 
     scores = torch.einsum("bd,bmd->bm", query, memory_keys) / math.sqrt(query.size(-1))
     scores = scores.masked_fill(~memory_mask, -1.0e9)
@@ -36,9 +44,21 @@ def retrieve_topk(
         1,
         top_indices.unsqueeze(-1).expand(-1, -1, memory_values.size(-1)),
     )
+
+    null_weight = query.new_zeros(query.size(0))
+    if use_null_slot:
+        if null_score is None:
+            null_score = query.new_zeros(())
+        null_scores = null_score.to(device=query.device, dtype=query.dtype).expand(query.size(0), 1)
+        null_values = query.new_zeros(query.size(0), 1, memory_values.size(-1))
+        top_scores = torch.cat([top_scores, null_scores], dim=1)
+        top_values = torch.cat([top_values, null_values], dim=1)
+
     weights = torch.softmax(top_scores, dim=-1)
     retrieved = torch.sum(weights.unsqueeze(-1) * top_values, dim=1)
-    return retrieved, scores, top_indices, weights
+    if use_null_slot:
+        null_weight = weights[:, -1]
+    return retrieved, scores, top_indices, weights, null_weight
 
 
 def apply_memory_control(
@@ -71,8 +91,10 @@ class EpisodicMemory(nn.Module):
     exact recall, not on learning a write detector.
     """
 
-    def __init__(self, d_model: int):
+    def __init__(self, d_model: int, use_null_slot: bool = False, null_score_init: float = 0.0):
         super().__init__()
+        self.use_null_slot = use_null_slot
+        self.null_score = nn.Parameter(torch.tensor(float(null_score_init)))
         self.query_proj = nn.Linear(d_model, d_model, bias=False)
         self.key_proj = nn.Linear(d_model, d_model, bias=False)
         self.value_proj = nn.Linear(d_model, d_model, bias=False)
@@ -111,14 +133,21 @@ class EpisodicMemory(nn.Module):
         retrieved = torch.zeros_like(query_source)
         for hop in range(num_hops):
             query = self.query_proj(query_source)
-            retrieved, scores, top_indices, weights = retrieve_topk(
+            retrieved, scores, top_indices, weights, null_weight = retrieve_topk(
                 query=query,
                 memory_keys=memory_keys,
                 memory_values=memory_values,
                 memory_mask=memory_mask,
                 top_k=top_k,
+                use_null_slot=self.use_null_slot,
+                null_score=self.null_score,
             )
-            hop_infos.append({"scores": scores, "top_indices": top_indices, "weights": weights})
+            hop_infos.append({
+                "scores": scores,
+                "top_indices": top_indices,
+                "weights": weights,
+                "null_weight": null_weight,
+            })
 
             if hop_positive_indices is not None and hop < hop_positive_indices.size(1):
                 positive = hop_positive_indices[:, hop]
@@ -137,6 +166,7 @@ class EpisodicMemory(nn.Module):
             "scores": final_info["scores"],
             "top_indices": final_info["top_indices"],
             "weights": final_info["weights"],
+            "null_weight": final_info.get("null_weight", token_embeddings.new_zeros(token_embeddings.size(0))),
             "retrieval_loss": retrieval_loss,
         }
         return retrieved, info

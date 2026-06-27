@@ -23,6 +23,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--out-dir", type=str, default="runs/memory_model")
+    parser.add_argument("--memory-null-slot", action="store_true")
+    parser.add_argument("--null-score-init", type=float, default=0.0)
     return parser
 
 
@@ -49,6 +51,8 @@ def main() -> None:
                     device=args.device,
                     lambda_ret=0.1,
                     top_k=1,
+                    memory_null_slot=args.memory_null_slot,
+                    null_score_init=args.null_score_init,
                     memory_control="normal",
                     write_mode="oracle",
                     oracle_memory=True,

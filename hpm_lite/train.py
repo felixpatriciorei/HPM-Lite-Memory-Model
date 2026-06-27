@@ -95,6 +95,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--lambda-ret", type=float, default=0.1)
     parser.add_argument("--top-k", type=int, default=1)
+    parser.add_argument("--memory-null-slot", type=str_to_bool, default=False)
+    parser.add_argument("--null-score-init", type=float, default=0.0)
     parser.add_argument(
         "--memory-control",
         choices=["normal", "shuffle_values", "shuffled_values", "random_keys", "corrupt_values", "no_retrieval"],
@@ -128,6 +130,8 @@ def make_model(args: argparse.Namespace, device: torch.device) -> HpmLiteModel:
         heads=args.heads,
         window=args.window,
         max_seq_len=max(2048, args.seq_len + 1),
+        use_null_slot=args.memory_null_slot,
+        null_score_init=args.null_score_init,
     )
     return HpmLiteModel(config).to(device)
 
