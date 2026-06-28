@@ -1,36 +1,22 @@
 # README design notes
 
-This README version was rewritten to function as the repository front page, not just a text summary.
+This README was rewritten as a public-facing research-engineering front page, not a hype page.
 
-## What changed
+Design choices:
 
-- The main 2048 result figure is now placed at the top of the README.
-- The model/task schematic is included directly, not hidden in `results/figures`.
-- Diagnostics and learning curves are linked and embedded.
-- The 2048 seed-level table is still visible for people who do not open the figures.
-- Error bars are explicitly described as sample standard deviation across seeds.
-- The local baseline's writer columns are called out as bookkeeping artifacts.
-- The README includes a direct asset checker: `scripts/check_readme_assets.py`.
+- Lead with the narrow research question.
+- State what the project is not.
+- Separate v1 headline results from v2 development results.
+- Avoid claiming v2 has a full 2048 seed sweep until the CSV exists in the repo.
+- Make reproduction commands visible from the front page.
+- Link figures and processed CSVs directly.
+- Use the resume section as a concise but defensible portfolio description.
 
-## Design standard used
+The README should be identical on `main` and `hpm-v2-training` after merge. If a branch does not contain the linked files yet, merge the v2 branch before updating README on `main`.
 
-The README should answer five questions quickly:
+External design references used while drafting:
 
-1. What is this project?
-2. Why does it matter?
-3. What is the strongest result?
-4. Can I inspect the figures/data behind it?
-5. What should I not overclaim?
-
-The front page now follows that order.
-
-## Important policy
-
-Do not commit this README unless the figure assets exist. Run:
-
-```bash
-python scripts/make_research_figures.py
-python scripts/check_readme_assets.py
-```
-
-If the checker fails, the GitHub front page will have broken images or links.
+- GitHub/open-source community guidance emphasizes clear README/contribution documentation as part of a healthy project.
+- PLOS figure guidance emphasizes objective data display and avoiding figure designs that obscure the data.
+- Nature figure guidance emphasizes defined elements, clear hierarchy, and removing unnecessary decoration.
+- NeurIPS-style review checklists require clearly described error bars and experimental uncertainty.
