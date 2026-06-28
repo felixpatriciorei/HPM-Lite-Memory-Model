@@ -8,7 +8,7 @@ from typing import Any
 
 from hpm_lite.train import run_training
 
-VALID_MODELS = {"local", "hpm_lite"}
+VALID_MODELS = {"local", "hpm_lite", "hpm_lite_v2"}
 
 SUMMARY_COLUMNS = [
     "model",
@@ -193,7 +193,7 @@ def make_training_args(args: argparse.Namespace, model: str) -> SimpleNamespace:
         # and loss/evaluation helpers expect those tensors to exist. It is not a
         # memory-writing model, so the public summary row is normalized to
         # write_mode="none" below.
-        write_mode=args.write_mode if model == "hpm_lite" else "oracle",
+        write_mode=args.write_mode if model in {"hpm_lite", "hpm_lite_v2"} else "oracle",
         oracle_memory=True,
         num_facts=args.num_facts,
         repeated_keys=False,
@@ -271,9 +271,9 @@ def main() -> None:
         print(f"{row['model']} exact={exact:.4f} ce={ce:.4f}")
 
     by_model = {row["model"]: row for row in rows}
-    if "local" in by_model and "hpm_lite" in by_model:
+    if "local" in by_model and ("hpm_lite" in by_model or "hpm_lite_v2" in by_model):
         local = by_model["local"]
-        hpm = by_model["hpm_lite"]
+        hpm = by_model.get("hpm_lite", by_model.get("hpm_lite_v2"))
         gain = float(hpm.get("eval_answer_exact", 0.0)) - float(local.get("eval_answer_exact", 0.0))
         print(f"exact gain={gain:.4f}")
 
