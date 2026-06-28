@@ -1,20 +1,33 @@
 # HPM-Lite Memory Model
 
-> **A compact PyTorch experiment testing whether a small HPM-style memory model can recall long-range key-value facts better than a same-scale local Transformer.**
+> A small PyTorch research prototype for testing whether explicit episodic memory helps with long-range exact recall when a local Transformer cannot see the original fact.
 
-HPM-Lite Memory Model is a focused research prototype for studying **long-range exact recall**. It compares a fixed-window local Transformer baseline against a small hierarchical memory model with local, recurrent, and episodic memory paths.
+This repository is a controlled memory experiment, not a chatbot and not a production LLM. The narrow question is:
 
-This repository is not a chatbot, not a production LLM, and not a claim that HPM replaces Transformers. It is a controlled experiment designed to answer a narrower question:
+> If a key-value fact appears far outside the local attention window, can a small HPM-style model write it into memory and retrieve it later better than a fixed-window local Transformer baseline?
 
-> When a fact appears far outside the local attention window, can explicit memory preserve and retrieve it better than local attention alone?
-
-Current results suggest **yes** on synthetic key-value recall.
+Current evidence says **yes on synthetic key-value recall**. The strongest current result is a 2048-token learned-writer sweep where HPM-Lite reaches **98.33% mean exact answer accuracy over 3 seeds**, while the matched local-window baseline reaches **0.00% over 3 seeds**.
 
 ---
 
-## Core idea
+## Why this repo exists
 
-The task is intentionally simple:
+Transformers are good at many things, but local attention has an obvious weakness: if the needed token is outside the window, the model cannot directly attend to it. This project isolates that failure mode with a deliberately simple task.
+
+The point is not to prove general intelligence. The point is to make one mechanism testable:
+
+- local context handles nearby tokens,
+- recurrent state carries a compressed stream state,
+- episodic memory stores sparse key-value facts,
+- a router mixes local, recurrent, and episodic paths before prediction.
+
+The experiment is intentionally small enough to run on consumer GPUs, but structured enough to record exact accuracy, answer cross-entropy, retrieval quality, writer quality, parameters, speed, VRAM, and wall time.
+
+---
+
+## Task
+
+The synthetic sequence looks like this:
 
 ```text
 FACT k12 v77
@@ -25,90 +38,28 @@ QUERY k03
 ANSWER v19
 ```
 
-The model must remember which value belongs to the queried key. The hard part is not language understanding. The hard part is that the relevant `FACT` can appear thousands of tokens before the `QUERY`.
+The model must output the correct value token at the answer position. The difficulty is distance: the relevant `FACT` can appear hundreds or thousands of tokens before the `QUERY`.
 
-A local Transformer can only attend to nearby tokens. If the fact is outside its local window, it mostly has to guess.
+In the main 2048-token setting:
 
-HPM-Lite adds an episodic memory path. It can write key-value facts into memory and retrieve them later, even when they are far outside the local attention window.
-
----
-
-## Result snapshot
-
-Current single-run results show HPM-Lite solving long-range synthetic key-value recall while the local-window baseline collapses outside its window.
-
-| Setting | Seq len | Window | Local exact | HPM-Lite exact | Gain | Local CE | HPM CE |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| Oracle write | 512 | 256 | 0.0063 | 1.0000 | +0.9938 | 7.37 | 0.00 |
-| Oracle write | 2048 | 256 | 0.0000 | 1.0000 | +1.0000 | 7.35 | 0.00 |
-| Null-slot memory | 4096 | 256 | 0.0000 | 1.0000 | +1.0000 | 13.71 | 0.00 |
-| Null-slot memory | 8192 | 256 | 0.0000 | 1.0000 | +1.0000 | 23.87 | 0.00 |
-| Learned writer | 512 | 256 | 0.0125 | 1.0000 | +0.9875 | 6.27 | 0.00 |
-| Learned writer | 2048 | 256 | 0.0000 | 1.0000 | +1.0000 | 6.63 | ~0.00 |
-
-The most important recent result is the **2048-token learned-writer run**:
-
-| Metric | Value |
-|---|---:|
-| HPM-Lite exact accuracy | 1.0000 |
-| HPM-Lite answer CE | 0.0000013 |
-| Retrieval top1 | 1.0000 |
-| Retrieval topk | 1.0000 |
-| True fact written rate | 0.99375 |
-| Missed fact rate | 0.00625 |
-| False write rate | 0.00625 |
-| Parameters | 721,671 |
-| Train time | 5137.64 seconds |
-| GPU | RTX 4060 |
-
-This is a meaningful step beyond oracle memory: the model is no longer simply handed perfect writes at evaluation. It uses a supervised learned writer to select memory slots.
-
----
-
-## Visual overview
-
-```mermaid
-flowchart LR
-    X["Input tokens x_t"] --> E["Embedding"]
-
-    E --> L["Local mixer<br/>l_t"]
-    E --> R["GRU recurrent state<br/>r_t"]
-    E --> Q["Query key κ_t"]
-
-    Q --> M["Episodic memory read<br/>e_t"]
-    S["Memory slots (k_i, v_i)"] --> M
-
-    L --> G["Router<br/>α = softmax(W[l_t, r_t, e_t])"]
-    R --> G
-    M --> G
-
-    G --> H["Mixed state<br/>m_t = α_l l_t + α_r r_t + α_e e_t"]
-    H --> O["Output head"]
-    O --> P["p(y)"]
+```text
+sequence length = 2048
+local window    = 256
 ```
 
-If Mermaid rendering is unavailable, see the static architecture figure:
-
-![HPM-Lite model paths](docs/figures/hpm_lite_model_paths.png)
+So the local baseline cannot directly inspect many of the earlier facts at answer time.
 
 ---
 
-## Architecture
+## Model sketch
 
-HPM-Lite uses three paths:
+HPM-Lite has three paths:
 
-1. **Local path**  
-   Handles nearby token interactions.
+1. **Local path** — handles short-range token mixing.
+2. **Recurrent path** — keeps a compressed sequential state.
+3. **Episodic path** — writes and retrieves sparse key-value memories.
 
-2. **Recurrent path**  
-   Maintains a compressed sequential state.
-
-3. **Episodic path**  
-   Stores and retrieves sparse key-value facts.
-
-The router learns how much to trust each path at each timestep.
-
-Mathematically:
+The router learns how much to trust each path:
 
 ```math
 l_t = \mathrm{LocalMixer}(x_{1:t})
@@ -119,7 +70,7 @@ r_t = \mathrm{GRU}(x_t, r_{t-1})
 ```
 
 ```math
-e_t = \sum_{i \in \mathrm{TopK}(\kappa_t)} \mathrm{softmax}(\kappa_{t,i}) \nu_i
+e_t = \mathrm{EpisodicRead}(\kappa_t, M)
 ```
 
 ```math
@@ -131,67 +82,63 @@ m_t = \alpha_l l_t + \alpha_r r_t + \alpha_e e_t
 ```
 
 ```math
-p(y) = \mathrm{softmax}(W_o m_t)
+p(y_t) = \mathrm{softmax}(W_o m_t)
 ```
 
----
-
-## What “local baseline” means
-
-The local baseline is a small Transformer-like model with a fixed local attention window.
-
-If the local window is 256 tokens and the fact appears 2048 tokens before the query, the local model cannot directly inspect the fact.
-
-That is why the local baseline is expected to fail at long distances. It is the control group for testing whether explicit memory helps.
+In plain language: the model can answer from nearby context, from recurrent state, or from retrieved memory.
 
 ---
 
-## What answer-position CE means
+## Main result: learned writer at 2048 tokens
 
-Answer-position cross entropy measures how much probability the model assigns to the correct answer token:
+These are processed seed sweeps, not a single cherry-picked run.
 
-```math
-\mathrm{CE} = -\log(p(\mathrm{correct\ answer}))
-```
+| Model | Seq len | Window | Seeds used | Params | Exact accuracy | Answer CE |
+|---|---:|---:|---:|---:|---:|---:|
+| HPM-Lite, learned writer | 2048 | 256 | 3 | 721,671 | **0.9833 ± 0.0144** | **0.4943 ± 0.6340** |
+| Local Transformer baseline | 2048 | 256 | 3 matched | 522,242 | **0.0000 ± 0.0000** | **6.8873 ± 0.3920** |
+| Local Transformer baseline | 2048 | 256 | 4 total | 522,242 | 0.0031 ± 0.0063 | 6.9785 ± 0.3684 |
 
-Lower is better.
+Seed-level 2048 learned-writer results:
 
-| CE | Approx. probability on correct answer | Interpretation |
-|---:|---:|---|
-| 0 | ~100% | confidently correct |
-| 7 | ~0.09% | mostly wrong |
-| 14 | ~0.00008% | extremely wrong |
-| 24 | ~0.000000004% | essentially zero probability |
+| Seed | HPM exact | HPM CE | Retrieval top1 | True fact written | Missed fact | False write |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 1.0000 | 0.0000 | 1.0000 | 0.9969 | 0.0031 | 0.0031 |
+| 1 | 0.9750 | 0.2737 | 1.0000 | 0.9813 | 0.0188 | 0.0188 |
+| 2 | 0.9750 | 1.2091 | 1.0000 | 0.9844 | 0.0156 | 0.0156 |
 
-In the current results, HPM-Lite stays near zero CE while the local baseline becomes increasingly wrong as distance grows.
+Seed-level local baseline results:
+
+| Seed | Local exact | Local CE |
+|---:|---:|---:|
+| 0 | 0.0000 | 6.5883 |
+| 1 | 0.0000 | 6.7425 |
+| 2 | 0.0000 | 7.3310 |
+| 3, extra | 0.0125 | 7.2522 |
+
+**Interpretation:** retrieval top-1 is 100% for HPM-Lite across the 2048 learned-writer seeds. The remaining HPM errors are mostly associated with learned write misses, not failed memory lookup.
+
+**Important caveat:** this is not yet a parameter-matched proof. The HPM model has more parameters than the local baseline in this sweep. The result is still useful because the gap is large, but a stricter parameter-matched control belongs in the next round.
 
 ---
 
-## Current figures
+## What this supports
 
-The repository includes generated figures in `docs/figures/`.
+The current evidence supports this limited claim:
 
-Recommended figure set:
+> On a controlled synthetic long-range key-value recall benchmark, explicit episodic memory lets a small HPM-style model retain and retrieve facts that a fixed-window local Transformer baseline fails to recover at 2048 tokens.
 
-| Figure | Purpose |
-|---|---|
-| `01_exact_recall_vs_distance.png` | Main accuracy result |
-| `02_answer_ce_vs_distance.png` | Confidence/error comparison |
-| `03_correct_answer_probability_from_ce.png` | Converts CE into intuitive probability |
-| `04_ce_gap_by_distance.png` | Shows the widening CE gap |
-| `05_error_rate_log_scale.png` | Shows error rate on a log scale |
-| `06_parameter_count_by_run.png` | Tracks parameter count across runs |
-| `07_learned_writer_progress.png` | Learned writer accuracy/recall |
-| `08_learned_writer_ce_comparison.png` | Learned-writer CE comparison |
-| `hpm_lite_model_paths.png` | Architecture diagram |
+It does **not** prove:
 
-Example:
+- general language understanding,
+- chatbot ability,
+- replacement of full attention,
+- natural-language fact extraction,
+- unsupervised memory writing,
+- production readiness,
+- superiority to all Transformer variants.
 
-![Exact recall vs distance](docs/figures/01_exact_recall_vs_distance.png)
-
-![Answer CE vs distance](docs/figures/02_answer_ce_vs_distance.png)
-
-![Learned writer progress](docs/figures/07_learned_writer_progress.png)
+This repo is a mechanism study, not a general AI system.
 
 ---
 
@@ -199,99 +146,68 @@ Example:
 
 ```text
 hpm_lite/
-  data.py                 Synthetic key-value task generation
-  evaluate.py             Evaluation and metric computation
-  memory.py               Episodic memory read/write logic
-  metrics.py              Accuracy and retrieval metrics
-  model.py                Local baseline and HPM-Lite model
-  train.py                Training loop
-  write_modes.py          Oracle, random, and learned write modes
+  data.py                 synthetic key-value task generation
+  evaluate.py             evaluation and metric computation
+  memory.py               episodic memory logic
+  metrics.py              accuracy / retrieval metrics
+  model.py                local baseline and HPM-Lite model
+  train.py                training loop and logging
+  write_modes.py          oracle, random, and learned write modes
 
 scripts/
-  run_memory_model.py     Main experiment runner
-  make_scientific_figures.py
-  run_validation.py
-  run_smoke.py
+  run_memory_model.py     main experiment runner
+  make_research_figures.py
+  make_paper_figures.py
 
 docs/
-  scientific_results.md
-  fact_check_plan.md
-  figures/
+  figure_design_audit.md
+  figure_reference_notes.md
+  experiment_matrix.md
+  logging_schema.md
 
 results/
-  oracle_distance_results.csv
-  learned_writer_results.csv
-  derived_statistics.csv
+  processed/              committed processed CSV sweeps
+  figures/paper/          generated paper-style figures
 
 tests/
   test_memory.py
+  test_learned_writer.py
   test_hpm_lite_router.py
   test_shapes.py
-  test_learned_writer.py
+  test_experiment_logging.py
 ```
 
 ---
 
-## Installation
-
-Clone the repo:
+## Install
 
 ```bash
 git clone https://github.com/felixpatriciorei/HPM-Lite-Memory-Model.git
 cd HPM-Lite-Memory-Model
+python -m pip install -r requirements.txt
 ```
 
-Install requirements:
-
-```bash
-pip install -r requirements.txt
-```
-
-For CUDA users, verify PyTorch sees the GPU:
+Check CUDA:
 
 ```bash
 python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no cuda')"
 ```
 
----
-
-## Tests
-
-Run all tests:
+Run tests:
 
 ```bash
-pytest -q
-```
-
-Run targeted tests:
-
-```bash
-pytest -q tests/test_memory.py tests/test_hpm_lite_router.py tests/test_shapes.py tests/test_learned_writer.py
+python -m pytest -q
 ```
 
 ---
 
-## Running experiments
+## Reproduce the 2048 learned-writer run
 
-### Oracle / null-slot memory run
-
-```bash
-python scripts/run_memory_model.py \
-  --seq-len 2048 \
-  --window 256 \
-  --d-model 192 \
-  --layers 2 \
-  --heads 4 \
-  --steps 200 \
-  --batch-size 32 \
-  --device cuda \
-  --memory-null-slot
-```
-
-### Learned-writer run
+One HPM seed:
 
 ```bash
-python scripts/run_memory_model.py \
+python -u scripts/run_memory_model.py \
+  --models hpm_lite \
   --seq-len 2048 \
   --window 256 \
   --d-model 128 \
@@ -303,185 +219,90 @@ python scripts/run_memory_model.py \
   --memory-null-slot \
   --write-mode learned \
   --learned-writer-teacher-forcing-steps 200 \
-  --lambda-writer 0.3
+  --lambda-writer 0.3 \
+  --log-every 100 \
+  --save-step-log \
+  --record-vram \
+  --seed 0
 ```
 
-### Smaller 8GB GPU run
+One local baseline seed:
 
 ```bash
-python scripts/run_memory_model.py \
-  --seq-len 8192 \
+python -u scripts/run_memory_model.py \
+  --models local \
+  --seq-len 2048 \
   --window 256 \
-  --d-model 96 \
+  --d-model 128 \
   --layers 1 \
   --heads 4 \
-  --steps 80 \
-  --batch-size 2 \
+  --steps 600 \
+  --batch-size 8 \
   --device cuda \
-  --memory-null-slot
+  --log-every 100 \
+  --save-step-log \
+  --record-vram \
+  --seed 0
 ```
 
 ---
 
-## Generating figures
+## Generate figures
 
 ```bash
-python scripts/make_scientific_figures.py
+python scripts/make_research_figures.py
 ```
 
-This regenerates the figures in:
+Expected output:
 
 ```text
-docs/figures/
+results/figures/paper/
+  fig_01_model_task_schematic.png
+  fig_02_main_2048_results.png
+  fig_03_writer_retrieval_diagnostics.png
+  fig_04_hpm_training_dynamics.png
+  fig_05_supplemental_seed_checks.png
+  paper_results_table.csv
+  figure_manifest.csv
+  figure_audit_report.md
 ```
+
+The figure pipeline is designed to show raw seed points instead of hiding everything behind a single bar. The audit report also records what the figures should and should not be used to claim.
 
 ---
 
-## Result files
+## Data files to trust first
 
-Current summarized result files:
+Use processed files before raw run folders:
 
 ```text
-results/oracle_distance_results.csv
-results/learned_writer_results.csv
-results/derived_statistics.csv
+results/processed/learned_writer_2048_seed_sweep.csv
+results/processed/local_2048_seed_sweep.csv
+results/processed/learned_writer_512_seed_sweep.csv
 ```
 
-Raw run summaries should be copied from `runs/` into `docs/` before committing, because `runs/` is normally ignored:
+Known logging caveats:
 
-```bash
-copy /Y runs\memory_model\memory_model_summary.csv docs\memory_model_summary_2048_learned_writer.csv
-```
-
----
-
-## Interpreting the current evidence
-
-The current evidence supports this limited claim:
-
-> On synthetic long-range key-value recall, HPM-Lite can preserve and retrieve facts that a same-scale local-window baseline cannot access.
-
-The current evidence does **not** prove:
-
-- general language understanding
-- chatbot ability
-- replacement of full attention
-- natural-language fact extraction
-- fully autonomous memory writing
-- production readiness
-
-This distinction matters. The project is currently a memory-mechanism experiment, not a general AI system.
-
----
-
-## Why the learned writer matters
-
-Earlier runs used oracle writes. That means the model was given clean memory slots.
-
-Oracle runs are still useful because they test whether retrieval and readout work, but they do not prove the model can decide what to remember.
-
-The learned writer is the next stage. It learns which positions should be written to memory using synthetic supervision.
-
-Current learned-writer results:
-
-| Seq len | Local exact | HPM exact | Writer recall | Retrieval top1 |
-|---:|---:|---:|---:|---:|
-| 512 | 0.0125 | 1.0000 | 0.9922 | 1.0000 |
-| 2048 | 0.0000 | 1.0000 | 0.99375 | 1.0000 |
-
-This means the model is beginning to move away from pure oracle memory, while still using controlled supervision.
-
----
-
-## Current limitations
-
-The project is still early.
-
-Known limitations:
-
-- mostly single-seed results
-- synthetic key-value data only
-- learned writer uses synthetic labels
-- model sizes differ across some distance runs
-- no full ablation suite yet
-- no parameter-matched sweep yet
-- no natural-language memory extraction yet
-- no commercial inference optimization yet
-
----
-
-## Next experiments
-
-The next serious evidence should come from ablations and controls.
-
-### Ablations
-
-Run:
-
-- full HPM-Lite
-- no episodic memory
-- no recurrent path
-- no router
-- no null slot
-- local baseline
-
-Expected strong pattern:
-
-```text
-full HPM-Lite works
-local baseline fails
-no-episodic fails
-shuffled-memory fails
-missing-key routes to null
-```
-
-### Controls
-
-Run:
-
-- shuffled memory values
-- random writes
-- missing-key queries
-- no retrieval
-- near-duplicate keys
-
-These controls are important because they show the model succeeds for the right reason.
-
-### Efficiency
-
-Record:
-
-- parameter count
-- peak VRAM
-- examples/sec
-- tokens/sec
-- wall-clock training time
-
-This matters because the claim includes “similar compute.”
-
-### Multi-seed runs
-
-Run at least 3 seeds per setting and plot:
-
-- mean
-- standard deviation
-- confidence interval
-
-That is the main step from “promising demo” to “research-grade evidence.”
+- Some raw summaries may have blank seed/model-shape fields; the processed sweep files fix the seed assignment.
+- For `model=local`, writer-related columns are bookkeeping artifacts and should not be interpreted as local-memory behavior.
+- The 2048 HPM-vs-local comparison is strong, but not perfectly parameter-matched.
 
 ---
 
 ## Roadmap
 
-1. Add `--models` so experiments can run only `local`, only `hpm_lite`, or both.
-2. Add `--log-every` so long runs show progress.
-3. Add VRAM and tokens/sec logging.
-4. Add checkpoint/resume support.
-5. Add ablation flags.
-6. Add missing-key and shuffled-memory controls.
-7. Run 3-seed sweeps.
-8. Add natural-ish fact templates.
-9. Only after exact recall is stable: add latent predictive objectives.
+High-priority next experiments:
+
+- parameter-matched local baseline,
+- no-episodic-memory ablation,
+- no-recurrent-path ablation,
+- no-router or fixed-router ablation,
+- shuffled-memory control,
+- missing-key/null-slot control,
+- 4096-token learned-writer sweep,
+- natural-ish fact templates after synthetic KV is stable.
+
+The main standard is simple: if a figure or table makes a claim, there should be a command and a processed CSV behind it.
 
 ---
 
@@ -500,12 +321,4 @@ That is the main step from “promising demo” to “research-grade evidence.�
 
 ## Status
 
-This repository currently demonstrates a strong early result on controlled synthetic long-range memory recall.
-
-It should be read as:
-
-> promising mechanism evidence
-
-not as:
-
-> finished architecture proof
+Active research prototype. Promising mechanism evidence; not a finished architecture proof.
