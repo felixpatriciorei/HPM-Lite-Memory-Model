@@ -8,10 +8,7 @@ from typing import Any
 
 from hpm_lite.train import run_training
 
-
 VALID_MODELS = {"local", "hpm_lite"}
-MODEL_SEED_OFFSETS = {"local": 0, "hpm_lite": 1}
-
 
 SUMMARY_COLUMNS = [
     "model",
@@ -42,7 +39,6 @@ SUMMARY_COLUMNS = [
     "run_dir",
     "step_log_path",
 ]
-
 
 RAW_SUMMARY_COLUMNS = [
     "run_id",
@@ -76,6 +72,16 @@ RAW_SUMMARY_COLUMNS = [
     "step_log_path",
 ]
 
+LOCAL_ONLY_BLANK_COLUMNS = [
+    "eval_retrieval_top1",
+    "eval_retrieval_topk",
+    "eval_true_fact_written_rate",
+    "eval_false_write_rate",
+    "eval_missed_fact_rate",
+    "eval_avg_written_slots",
+    "eval_retrieval_margin",
+]
+
 
 def parse_models(value: str) -> list[str]:
     models = [part.strip() for part in value.split(",") if part.strip()]
@@ -85,7 +91,7 @@ def parse_models(value: str) -> list[str]:
     if invalid:
         valid = ",".join(sorted(VALID_MODELS))
         raise argparse.ArgumentTypeError(f"invalid model(s): {','.join(invalid)}; valid choices: {valid}")
-    # Preserve user order while removing duplicates.
+
     deduped: list[str] = []
     for model in models:
         if model not in deduped:
@@ -154,6 +160,13 @@ def write_csv_rows(path: Path, fieldnames: list[str], rows: list[dict[str, Any]]
 
 
 def make_training_args(args: argparse.Namespace, model: str) -> SimpleNamespace:
+    """Create the single-model training namespace.
+
+    The command-line seed is now the recorded and executed seed for every model.
+    Earlier versions added a model-specific offset, which made run IDs like
+    ``seed1`` appear when the user asked for ``--seed 0``. That was confusing
+    and made processed CSVs need manual repair.
+    """
     return SimpleNamespace(
         model=model,
         task="kv",
@@ -167,7 +180,7 @@ def make_training_args(args: argparse.Namespace, model: str) -> SimpleNamespace:
         layers=args.layers,
         heads=args.heads,
         lr=3.0e-4,
-        seed=args.seed + MODEL_SEED_OFFSETS[model],
+        seed=args.seed,
         device=args.device,
         lambda_ret=0.1,
         lambda_writer=args.lambda_writer,
@@ -176,6 +189,10 @@ def make_training_args(args: argparse.Namespace, model: str) -> SimpleNamespace:
         memory_null_slot=args.memory_null_slot,
         null_score_init=args.null_score_init,
         memory_control="normal",
+        # Local uses oracle memory selection internally only because the dataset
+        # and loss/evaluation helpers expect those tensors to exist. It is not a
+        # memory-writing model, so the public summary row is normalized to
+        # write_mode="none" below.
         write_mode=args.write_mode if model == "hpm_lite" else "oracle",
         oracle_memory=True,
         num_facts=args.num_facts,
@@ -198,17 +215,54 @@ def row_with_run_id(row: dict[str, Any]) -> dict[str, Any]:
     return {"run_id": run_id, **row}
 
 
+def normalize_summary_row(
+    row: dict[str, Any],
+    *,
+    requested_seed: int,
+    d_model: int,
+    layers: int,
+    heads: int,
+) -> dict[str, Any]:
+    """Repair fields that must be explicit in research CSV outputs.
+
+    ``run_training`` returns metrics from the training loop. This function adds
+    the command-level configuration that downstream analysis needs and removes
+    misleading local-baseline memory bookkeeping.
+    """
+    normalized = row_with_run_id(dict(row))
+    normalized["seed"] = requested_seed
+    normalized["d_model"] = d_model
+    normalized["layers"] = layers
+    normalized["heads"] = heads
+
+    if normalized.get("model") == "local":
+        normalized["write_mode"] = "none"
+        for column in LOCAL_ONLY_BLANK_COLUMNS:
+            normalized[column] = ""
+
+    return normalized
+
+
 def main() -> None:
     args = build_arg_parser().parse_args()
     rows: list[dict[str, Any]] = []
+
     for model in args.models:
-        rows.append(run_training(make_training_args(args, model)))
+        metrics = run_training(make_training_args(args, model))
+        rows.append(
+            normalize_summary_row(
+                metrics,
+                requested_seed=args.seed,
+                d_model=args.d_model,
+                layers=args.layers,
+                heads=args.heads,
+            )
+        )
 
     out_path = Path(args.out_dir) / "memory_model_summary.csv"
     write_csv_rows(out_path, SUMMARY_COLUMNS, rows)
-
     if args.summary_csv:
-        append_csv_rows(Path(args.summary_csv), RAW_SUMMARY_COLUMNS, [row_with_run_id(row) for row in rows])
+        append_csv_rows(Path(args.summary_csv), RAW_SUMMARY_COLUMNS, rows)
 
     print(f"wrote {out_path}")
     for row in rows:
