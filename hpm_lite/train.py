@@ -16,6 +16,7 @@ from .data import FactRecallConfig, FactRecallDataset, VOCAB_SIZE
 from .evaluate import evaluate_batches
 from .metrics import answer_cross_entropy, answer_span_exact_accuracy, count_parameters, retrieval_metrics
 from .model import HpmLiteConfig, HpmLiteModel
+from .hpm_v2_model import HpmLiteV2Config, HpmLiteV2Model
 from .utils import ensure_dir, resolve_device, set_seed, str_to_bool, timestamp, write_json
 from .write_modes import apply_write_mode, batch_from_memory_selection, writer_metrics
 
@@ -67,7 +68,7 @@ class TinyAdamW:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train a minimal HPM-Lite synthetic recall model.")
-    parser.add_argument("--model", choices=["local", "recurrent", "epmem", "hpm_lite", "hebbian"], default="local")
+    parser.add_argument("--model", choices=["local", "recurrent", "epmem", "hpm_lite", "hpm_lite_v2", "hebbian"], default="local")
     parser.add_argument(
         "--task",
         choices=[
@@ -187,7 +188,23 @@ STEP_LOG_COLUMNS = [
     "peak_vram_mb",
 ]
 
-def make_model(args: argparse.Namespace, device: torch.device) -> HpmLiteModel:
+def make_model(args: argparse.Namespace, device: torch.device) -> torch.nn.Module:
+    if args.model == "hpm_lite_v2":
+        config = HpmLiteV2Config(
+            model_type="hpm_lite_v2",
+            vocab_size=VOCAB_SIZE,
+            d_model=args.d_model,
+            layers=args.layers,
+            heads=args.heads,
+            window=args.window,
+            max_seq_len=max(2048, args.seq_len + 1),
+            block_size=args.window,
+            use_null_slot=args.memory_null_slot,
+            null_score_init=args.null_score_init,
+            use_learned_writer=args.write_mode == "learned",
+        )
+        return HpmLiteV2Model(config).to(device)
+
     config = HpmLiteConfig(
         model_type=args.model,
         vocab_size=VOCAB_SIZE,

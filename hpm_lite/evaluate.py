@@ -45,6 +45,7 @@ def evaluate_batches(
     ret_topk_sum = 0.0
     ret_margin_sum = 0.0
     ret_count = 0
+    saw_retrieval_output = False
     reasoning_sum = 0.0
     reasoning_count = 0
     cond_positive_correct = 0.0
@@ -78,6 +79,8 @@ def evaluate_batches(
             use_learned_writer=use_learned_writer,
             learned_writer_teacher_forcing=False,
         )
+        if output.get("retrieval") and "top_indices" in output["retrieval"]:
+            saw_retrieval_output = True
         metric_batch = batch
         if use_learned_writer and "writer_memory_token_positions" in output["retrieval"]:
             metric_batch = batch_from_memory_selection(
@@ -146,6 +149,11 @@ def evaluate_batches(
                 "retrieval_margin": ret_margin_sum / ret_count,
             }
         )
+    elif saw_retrieval_output:
+        # Learned writers can temporarily write no valid target facts during early
+        # training. The retrieval module still ran, so report retrieval as 0
+        # instead of dropping the schema key entirely.
+        metrics.update({"retrieval_top1": 0.0, "retrieval_topk": 0.0, "retrieval_margin": 0.0})
     if reasoning_count:
         metrics["reasoning_success_given_retrieval"] = reasoning_sum / reasoning_count
     if writer_count:
