@@ -1,0 +1,4 @@
+group,n,exact_mean,exact_sd,answer_ce_mean,answer_ce_sd,parameters_mean,peak_vram_gb_mean,wall_time_sec_mean,eval_examples_per_sec_mean
+"HPM-Lite learned writer (2048, matched)",3,0.98333333,0.01443376,0.49426870,0.63404187,721671.00,8.1968,4791.3983,61.0336
+"Local Transformer (2048, matched)",3,0.00000000,0.00000000,6.88727236,0.39196129,522242.00,8.1854,344.1443,46.8917
+"Local Transformer (2048, all available)",4,0.00312500,0.00625000,6.97849580,0.36838744,522242.00,8.1854,344.8272,46.7393
