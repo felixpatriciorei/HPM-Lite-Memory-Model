@@ -1,45 +1,36 @@
 # README design notes
 
-This README rewrite follows a stricter rule: do not sell the project harder than the evidence allows.
+This README version was rewritten to function as the repository front page, not just a text summary.
 
 ## What changed
 
-- Replaced older single-run framing with processed 2048 seed sweeps.
-- Added matched-seed HPM-vs-local table.
-- Included raw seed values and standard deviations.
-- Added parameter-matching caveat.
-- Avoided interpreting local baseline writer columns.
-- Removed claims that imply general language ability or production readiness.
-- Kept the tone human and direct rather than corporate.
+- The main 2048 result figure is now placed at the top of the README.
+- The model/task schematic is included directly, not hidden in `results/figures`.
+- Diagnostics and learning curves are linked and embedded.
+- The 2048 seed-level table is still visible for people who do not open the figures.
+- Error bars are explicitly described as sample standard deviation across seeds.
+- The local baseline's writer columns are called out as bookkeeping artifacts.
+- The README includes a direct asset checker: `scripts/check_readme_assets.py`.
 
-## Source-of-truth data
+## Design standard used
 
-The 2048 result section is based on:
+The README should answer five questions quickly:
 
-- `results/processed/learned_writer_2048_seed_sweep.csv`
-- `results/processed/local_2048_seed_sweep.csv`
+1. What is this project?
+2. Why does it matter?
+3. What is the strongest result?
+4. Can I inspect the figures/data behind it?
+5. What should I not overclaim?
 
-## Suggested GitHub About description
+The front page now follows that order.
 
-A compact PyTorch research prototype testing episodic memory for long-range key-value recall against a fixed-window local Transformer baseline.
+## Important policy
 
-## Suggested topics
+Do not commit this README unless the figure assets exist. Run:
 
-```text
-pytorch
-memory-model
-long-context
-episodic-memory
-synthetic-benchmark
-transformer-baseline
-machine-learning
-research-prototype
+```bash
+python scripts/make_research_figures.py
+python scripts/check_readme_assets.py
 ```
 
-## Suggested pinned / short social description
-
-HPM-Lite Memory Model is a small, reproducible experiment showing that explicit episodic memory can solve synthetic long-range key-value recall at 2048 tokens where a fixed-window local Transformer baseline fails.
-
-## Warning
-
-Do not add badges for CI, license, paper, DOI, or package release unless those things actually exist.
+If the checker fails, the GitHub front page will have broken images or links.

@@ -1,33 +1,41 @@
 # HPM-Lite Memory Model
 
-> A small PyTorch research prototype for testing whether explicit episodic memory helps with long-range exact recall when a local Transformer cannot see the original fact.
+> A small PyTorch research artifact for testing whether explicit episodic memory helps with long-range exact recall when a fixed-window Transformer cannot see the original fact.
 
-This repository is a controlled memory experiment, not a chatbot and not a production LLM. The narrow question is:
+This repository is **not** a chatbot, production LLM, or finished architecture proof. It is a controlled experiment around one question:
 
-> If a key-value fact appears far outside the local attention window, can a small HPM-style model write it into memory and retrieve it later better than a fixed-window local Transformer baseline?
+> Can a small HPM-style model learn to write key-value facts into memory, retrieve them thousands of tokens later, and outperform a similarly local Transformer baseline on exact recall?
 
-Current evidence says **yes on synthetic key-value recall**. The strongest current result is a 2048-token learned-writer sweep where HPM-Lite reaches **98.33% mean exact answer accuracy over 3 seeds**, while the matched local-window baseline reaches **0.00% over 3 seeds**.
+Current answer: **yes on the synthetic KV benchmark tested here**. At 2048 tokens with a 256-token local window, HPM-Lite with a learned writer reaches **98.33% mean exact answer accuracy over 3 seeds**, while the matched local Transformer baseline reaches **0.00% over 3 matched seeds**.
 
----
+<p align="center">
+  <img src="results/figures/paper/fig_02_main_2048_results.png" alt="Main 2048-token results comparing HPM-Lite learned writer and local Transformer baseline" width="920">
+</p>
 
-## Why this repo exists
-
-Transformers are good at many things, but local attention has an obvious weakness: if the needed token is outside the window, the model cannot directly attend to it. This project isolates that failure mode with a deliberately simple task.
-
-The point is not to prove general intelligence. The point is to make one mechanism testable:
-
-- local context handles nearby tokens,
-- recurrent state carries a compressed stream state,
-- episodic memory stores sparse key-value facts,
-- a router mixes local, recurrent, and episodic paths before prediction.
-
-The experiment is intentionally small enough to run on consumer GPUs, but structured enough to record exact accuracy, answer cross-entropy, retrieval quality, writer quality, parameters, speed, VRAM, and wall time.
+<p align="center"><sub>Main 2048-token comparison. Generated from processed CSVs by <code>scripts/make_research_figures.py</code>.</sub></p>
 
 ---
 
-## Task
+## Start here
 
-The synthetic sequence looks like this:
+| What you want | Where to look |
+|---|---|
+| Main result | [`results/figures/paper/fig_02_main_2048_results.png`](results/figures/paper/fig_02_main_2048_results.png) |
+| Model/task schematic | [`results/figures/paper/fig_01_model_task_schematic.png`](results/figures/paper/fig_01_model_task_schematic.png) |
+| Writer/retrieval diagnostics | [`results/figures/paper/fig_03_writer_retrieval_diagnostics.png`](results/figures/paper/fig_03_writer_retrieval_diagnostics.png) |
+| Training curves | [`results/figures/paper/fig_04_hpm_training_dynamics.png`](results/figures/paper/fig_04_hpm_training_dynamics.png) |
+| Processed 2048 HPM data | [`results/processed/learned_writer_2048_seed_sweep.csv`](results/processed/learned_writer_2048_seed_sweep.csv) |
+| Processed 2048 local baseline data | [`results/processed/local_2048_seed_sweep.csv`](results/processed/local_2048_seed_sweep.csv) |
+| Figure audit report | [`results/figures/paper/figure_audit_report.md`](results/figures/paper/figure_audit_report.md) |
+| Figure generation script | [`scripts/make_research_figures.py`](scripts/make_research_figures.py) |
+
+If the images above do not render on GitHub, run the figure-generation command below and commit `results/figures/paper/`.
+
+---
+
+## The task
+
+The benchmark is intentionally simple. A sequence contains facts, noise, a query, then an answer position:
 
 ```text
 FACT k12 v77
@@ -38,28 +46,28 @@ QUERY k03
 ANSWER v19
 ```
 
-The model must output the correct value token at the answer position. The difficulty is distance: the relevant `FACT` can appear hundreds or thousands of tokens before the `QUERY`.
+The model is scored only at the answer position. The important difficulty is distance: the relevant fact can appear far outside the local attention window.
 
-In the main 2048-token setting:
+Main setting:
 
 ```text
 sequence length = 2048
 local window    = 256
 ```
 
-So the local baseline cannot directly inspect many of the earlier facts at answer time.
+A fixed-window local Transformer cannot directly attend back to many earlier facts at answer time. HPM-Lite is given an explicit episodic memory mechanism and must learn when to write and retrieve.
 
 ---
 
-## Model sketch
+## Model idea
 
-HPM-Lite has three paths:
+HPM-Lite combines three paths:
 
-1. **Local path** — handles short-range token mixing.
-2. **Recurrent path** — keeps a compressed sequential state.
-3. **Episodic path** — writes and retrieves sparse key-value memories.
+1. **Local path** for nearby token mixing.
+2. **Recurrent path** for compressed stream state.
+3. **Episodic path** for sparse key-value memory retrieval.
 
-The router learns how much to trust each path:
+A learned router mixes the paths before prediction:
 
 ```math
 l_t = \mathrm{LocalMixer}(x_{1:t})
@@ -85,29 +93,33 @@ m_t = \alpha_l l_t + \alpha_r r_t + \alpha_e e_t
 p(y_t) = \mathrm{softmax}(W_o m_t)
 ```
 
-In plain language: the model can answer from nearby context, from recurrent state, or from retrieved memory.
+<p align="center">
+  <img src="results/figures/paper/fig_01_model_task_schematic.png" alt="HPM-Lite model and task schematic" width="920">
+</p>
+
+<p align="center"><sub>Architecture and task schematic. This figure is meant to explain the mechanism, not to claim biological or production-scale plausibility.</sub></p>
 
 ---
 
-## Main result: learned writer at 2048 tokens
+## Main result: 2048-token learned writer
 
-These are processed seed sweeps, not a single cherry-picked run.
+The headline result uses processed seed-sweep CSVs, not a single cherry-picked run.
 
-| Model | Seq len | Window | Seeds used | Params | Exact accuracy | Answer CE |
+| Model | Seq len | Window | Seeds | Params | Exact accuracy | Answer CE |
 |---|---:|---:|---:|---:|---:|---:|
 | HPM-Lite, learned writer | 2048 | 256 | 3 | 721,671 | **0.9833 ± 0.0144** | **0.4943 ± 0.6340** |
 | Local Transformer baseline | 2048 | 256 | 3 matched | 522,242 | **0.0000 ± 0.0000** | **6.8873 ± 0.3920** |
 | Local Transformer baseline | 2048 | 256 | 4 total | 522,242 | 0.0031 ± 0.0063 | 6.9785 ± 0.3684 |
 
-Seed-level 2048 learned-writer results:
+Error bars are **sample standard deviation across seeds**, not confidence intervals.
 
-| Seed | HPM exact | HPM CE | Retrieval top1 | True fact written | Missed fact | False write |
+### Seed-level results
+
+| Seed | HPM exact | HPM CE | HPM retrieval top1 | True fact written | Missed fact | False write |
 |---:|---:|---:|---:|---:|---:|---:|
 | 0 | 1.0000 | 0.0000 | 1.0000 | 0.9969 | 0.0031 | 0.0031 |
 | 1 | 0.9750 | 0.2737 | 1.0000 | 0.9813 | 0.0188 | 0.0188 |
 | 2 | 0.9750 | 1.2091 | 1.0000 | 0.9844 | 0.0156 | 0.0156 |
-
-Seed-level local baseline results:
 
 | Seed | Local exact | Local CE |
 |---:|---:|---:|
@@ -116,15 +128,56 @@ Seed-level local baseline results:
 | 2 | 0.0000 | 7.3310 |
 | 3, extra | 0.0125 | 7.2522 |
 
-**Interpretation:** retrieval top-1 is 100% for HPM-Lite across the 2048 learned-writer seeds. The remaining HPM errors are mostly associated with learned write misses, not failed memory lookup.
+The useful interpretation is not “HPM is magically perfect.” It is:
 
-**Important caveat:** this is not yet a parameter-matched proof. The HPM model has more parameters than the local baseline in this sweep. The result is still useful because the gap is large, but a stricter parameter-matched control belongs in the next round.
+> The learned memory route makes the task mostly solvable at 2048 tokens, while the fixed-window baseline remains near failure. The HPM misses that remain are mostly associated with learned write misses, because retrieval top-1 is 100% across the HPM seeds once the fact is written.
 
 ---
 
-## What this supports
+## Diagnostics
 
-The current evidence supports this limited claim:
+<p align="center">
+  <img src="results/figures/paper/fig_03_writer_retrieval_diagnostics.png" alt="Writer and retrieval diagnostics for HPM-Lite" width="920">
+</p>
+
+<p align="center"><sub>Writer and retrieval diagnostics. Local-model writer columns are ignored because they are bookkeeping artifacts, not local-memory behavior.</sub></p>
+
+The diagnostic story:
+
+- HPM retrieval top-1 is `1.0` across the 2048 learned-writer seeds.
+- Exact accuracy is slightly below 100% in seeds 1 and 2.
+- The miss pattern lines up with learned write misses, not retrieval collapse.
+- The local baseline should be judged by exact accuracy, CE, parameters, VRAM, speed, and wall time — not writer metrics.
+
+---
+
+## Training dynamics
+
+<p align="center">
+  <img src="results/figures/paper/fig_04_hpm_training_dynamics.png" alt="Training dynamics for HPM-Lite at 2048 tokens" width="920">
+</p>
+
+<p align="center"><sub>HPM-Lite training curves from step logs. These show how exact accuracy, answer CE, writer recall, and loss evolve during training.</sub></p>
+
+The learning curves matter because the final table alone hides instability. For example, one 2048 seed has a visible loss spike during training but recovers by step 600. That is worth showing rather than hiding.
+
+---
+
+## Supplemental checks
+
+<p align="center">
+  <img src="results/figures/paper/fig_05_supplemental_seed_checks.png" alt="Supplemental seed checks and scaling results" width="920">
+</p>
+
+<p align="center"><sub>Supplemental checks: extra local seed and optional 512-to-2048 comparison when the 512 processed sweep exists.</sub></p>
+
+This figure is not the main claim. It exists to make the result easier to audit.
+
+---
+
+## What the result supports
+
+This repo supports this limited claim:
 
 > On a controlled synthetic long-range key-value recall benchmark, explicit episodic memory lets a small HPM-style model retain and retrieve facts that a fixed-window local Transformer baseline fails to recover at 2048 tokens.
 
@@ -132,13 +185,24 @@ It does **not** prove:
 
 - general language understanding,
 - chatbot ability,
-- replacement of full attention,
+- production readiness,
+- superiority to all Transformer variants,
 - natural-language fact extraction,
 - unsupervised memory writing,
-- production readiness,
-- superiority to all Transformer variants.
+- full parameter-matched dominance.
 
-This repo is a mechanism study, not a general AI system.
+The result is strong for the benchmark, but the benchmark is synthetic and intentionally narrow.
+
+---
+
+## Known caveats
+
+- **Not parameter-matched yet.** HPM-Lite has more parameters than the local baseline in the current 2048 sweep.
+- **Synthetic task.** The data is controlled key-value recall, not real natural language.
+- **Learned writer supervision.** The writer is learned, but the training setup still uses synthetic supervision.
+- **Local writer columns are noise.** For `model=local`, writer-related columns are bookkeeping artifacts and should not be interpreted.
+- **Small sample size.** Main HPM comparison uses 3 seeds. This is enough for a serious prototype, not enough for a final broad claim.
+- **Hardware is mixed.** HPM sweeps were run locally; local baselines used Kaggle T4s. This is fine for accuracy/CE, but speed comparisons should be treated carefully.
 
 ---
 
@@ -158,16 +222,19 @@ scripts/
   run_memory_model.py     main experiment runner
   make_research_figures.py
   make_paper_figures.py
+  check_readme_assets.py  verifies README image/file references
 
 docs/
   figure_design_audit.md
   figure_reference_notes.md
+  readme_design_notes.md
+  repo_front_page_audit.md
   experiment_matrix.md
   logging_schema.md
 
 results/
   processed/              committed processed CSV sweeps
-  figures/paper/          generated paper-style figures
+  figures/paper/          generated paper-style figures and audit report
 
 tests/
   test_memory.py
@@ -201,9 +268,7 @@ python -m pytest -q
 
 ---
 
-## Reproduce the 2048 learned-writer run
-
-One HPM seed:
+## Reproduce one 2048 HPM seed
 
 ```bash
 python -u scripts/run_memory_model.py \
@@ -226,7 +291,7 @@ python -u scripts/run_memory_model.py \
   --seed 0
 ```
 
-One local baseline seed:
+## Reproduce one 2048 local baseline seed
 
 ```bash
 python -u scripts/run_memory_model.py \
@@ -247,18 +312,22 @@ python -u scripts/run_memory_model.py \
 
 ---
 
-## Generate figures
+## Generate the paper-style figures
 
 ```bash
 python scripts/make_research_figures.py
 ```
 
-Expected output:
+Expected outputs:
 
 ```text
 results/figures/paper/
   fig_01_model_task_schematic.png
+  fig_01_model_task_schematic.pdf
+  fig_01_model_task_schematic.svg
   fig_02_main_2048_results.png
+  fig_02_main_2048_results.pdf
+  fig_02_main_2048_results.svg
   fig_03_writer_retrieval_diagnostics.png
   fig_04_hpm_training_dynamics.png
   fig_05_supplemental_seed_checks.png
@@ -267,13 +336,19 @@ results/figures/paper/
   figure_audit_report.md
 ```
 
-The figure pipeline is designed to show raw seed points instead of hiding everything behind a single bar. The audit report also records what the figures should and should not be used to claim.
+Then verify the README has no broken local image/file references:
+
+```bash
+python scripts/check_readme_assets.py
+```
+
+If this check fails, do not commit the README yet. Generate the figures or fix the paths first.
 
 ---
 
 ## Data files to trust first
 
-Use processed files before raw run folders:
+Use processed CSVs before raw run folders:
 
 ```text
 results/processed/learned_writer_2048_seed_sweep.csv
@@ -296,13 +371,13 @@ High-priority next experiments:
 - parameter-matched local baseline,
 - no-episodic-memory ablation,
 - no-recurrent-path ablation,
-- no-router or fixed-router ablation,
+- fixed-router or no-router ablation,
 - shuffled-memory control,
 - missing-key/null-slot control,
 - 4096-token learned-writer sweep,
 - natural-ish fact templates after synthetic KV is stable.
 
-The main standard is simple: if a figure or table makes a claim, there should be a command and a processed CSV behind it.
+The rule for this repo is simple: if a figure or table makes a claim, there should be a command and a processed CSV behind it.
 
 ---
 
