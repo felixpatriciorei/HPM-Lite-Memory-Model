@@ -2,58 +2,111 @@
 
 > A small, reproducible PyTorch research project for testing explicit memory in long-range exact recall.
 
-HPM-Lite asks a narrow question on purpose:
+HPM-Lite asks one narrow question on purpose:
 
-**Can a small model with explicit write/retrieve memory remember key-value facts thousands of tokens later, when a fixed-window Transformer baseline cannot attend back to the original fact?**
+**Can a small model with explicit write/retrieve memory remember key-value facts thousands of tokens later, when a fixed-window local Transformer baseline cannot attend back to the original fact?**
 
-The current answer is **yes on the synthetic key-value recall benchmark in this repo**. This is not a chatbot, a general LLM, or a claim that HPM replaces Transformers. It is a controlled memory testbed with reproducible scripts, seed-level CSVs, diagnostics, and figure generation.
+The current answer is **yes on the synthetic key-value recall benchmark in this repo**, with the strongest current evidence coming from a research-grade long-context stress matrix at 4096, 8192, and 12288 tokens. This is not a chatbot, not a general LLM, and not a claim that HPM replaces Transformers. It is a controlled memory testbed with seed-level CSVs, diagnostics, reproducible scripts, and statistical figures.
 
-![Main HPM-Lite 2048-token result](results/figures/paper/fig_02_main_2048_results.png)
-
----
-
-## Current status
-
-| Track                                      |                                                                                  Status | Evidence                                                                |
-| ------------------------------------------ | --------------------------------------------------------------------------------------: | ----------------------------------------------------------------------- |
-| HPM-Lite v1 learned writer                 |                                                                Stable 2048-token result | `results/processed/learned_writer_2048_seed_sweep.csv`                  |
-| Local Transformer baseline                 |                                Collapses at 2048 under the same local-window constraint | `results/processed/local_2048_seed_sweep.csv`                           |
-| HPM-Lite v2 core modules                   |                                                                  Implemented and tested | `hpm_lite/hpm_v2.py`, `tests/test_hpm_v2_modules.py`                    |
-| HPM-Lite v2 training path                  |                                                                              Integrated | `hpm_lite/hpm_v2_model.py`, `tests/test_hpm_v2_training_integration.py` |
-| HPM-Lite v2 512-token sweep                |                                                                        3 seeds complete | `results/processed/hpm_v2_512_seed_sweep.csv`                           |
-| HPM-Lite v2 2048-token fixed-writer recipe | seed 0 tracked; additional Kaggle runs observed but not yet imported into processed CSV | `results/processed/hpm_v2_2048_tf600_lw03_seed_sweep.csv`               |
+![Research-grade exact recall forest plot](results/figures/research_grade/fig_rg_02_exact_claim_forest.png)
 
 ---
 
-## Headline results
+## What changed in the figure reset
 
-### 2048-token HPM-Lite v1 vs local Transformer
+The old graph stack has been retired. The project now uses one canonical research-grade figure pipeline:
 
-At sequence length 2048 with a 256-token local window, HPM-Lite v1 with a learned writer reaches **98.33% mean exact accuracy over 3 seeds**, while the matched local Transformer baseline reaches **0.00% over the matched 3 seeds**.
+```bash
+python scripts/reset_research_grade_figures.py
+```
 
-| Model                       | Seq len | Window |     Seeds |  Params |  Exact accuracy |       Answer CE |
-| --------------------------- | ------: | -----: | --------: | ------: | --------------: | --------------: |
-| HPM-Lite v1, learned writer |    2048 |    256 |         3 | 721,671 | 0.9833 ± 0.0144 | 0.4943 ± 0.6340 |
-| Local Transformer baseline  |    2048 |    256 | 3 matched | 522,242 | 0.0000 ± 0.0000 | 6.8873 ± 0.3920 |
-| Local Transformer baseline  |    2048 |    256 |   4 total | 522,242 | 0.0031 ± 0.0063 | 6.9785 ± 0.3684 |
+That reset removes the legacy `results/figures/paper`, `results/figures/advanced`, and `docs/figures` directories, then regenerates:
 
-Error bars are sample standard deviation across seeds, not confidence intervals.
+```text
+results/figures/research_grade/
+results/processed/research_grade/
+```
 
-### HPM-Lite v2 early result
-
-HPM-Lite v2 adds a more explicit hybrid memory stack: local mixing, selective recurrent state, fast-weight associative memory, episodic retrieval, and a 4-path router.
-
-| Model/config                | Seq len | Window |            Seeds |  Exact accuracy | Notes                                                               |
-| --------------------------- | ------: | -----: | ---------------: | --------------: | ------------------------------------------------------------------- |
-| HPM-Lite v2, learned writer |     512 |    256 |                3 | 0.9854 ± 0.0157 | stable 512-token sanity sweep                                       |
-| HPM-Lite v2, tf600/lw0.3    |    2048 |    256 |        1 tracked |          1.0000 | fixed writer recipe; needs more tracked seeds before headline claim |
-| HPM-Lite v2, tf200/lw0.3    |    2048 |    256 | development runs |   0.8625–0.9000 | writer drift after teacher forcing ends too early                   |
-
-The v2 2048 result is deliberately presented conservatively. The key development finding is that **retrieval stayed strong, while writer recall drifted when teacher forcing ended at step 200**. Keeping writer supervision through the full 600-step run fixed tracked seed 0 to 100% exact accuracy.
+The new figures prioritize raw seed points, bootstrap confidence intervals, effect sizes, schedule-gap estimation, ECDFs, LOWESS training dynamics, retrieval-saturated failure analysis, and cost/performance views.
 
 ---
 
-## The benchmark
+## Current headline
+
+HPM-Lite v2 remains strong at long context when writer supervision is kept through the full 600-step run. When writer teacher forcing stops early at step 200, exact recall drops sharply even though retrieval top-1 usually stays near perfect.
+
+**Main interpretation:** retrieval is mostly saturated; the remaining long-context failure mode is writer/value quality.
+
+![Writer schedule estimation plot](results/figures/research_grade/fig_rg_03_writer_schedule_estimation.png)
+
+---
+
+## Canonical Kaggle long-context results
+
+These are the claim-facing results from the canonical Kaggle T4 runs. Error intervals are percentile bootstrap 95% confidence intervals over seeds. The 12288-token rows are marked exploratory because `n=2` is too small for strong claims.
+
+|   Seq len | writer schedule   |   n |   Mean exact |   95% CI low |   95% CI high |   Writer true fact |   Retrieval top-1 | Status                             |
+|----------:|:------------------|----:|-------------:|-------------:|--------------:|-------------------:|------------------:|:-----------------------------------|
+|      4096 | tf200             |   4 |       0.8    |       0.6625 |        0.9125 |             0.8539 |            1      | claim-safe                         |
+|      4096 | tf600             |   8 |       0.9938 |       0.9844 |        1      |             0.9914 |            1      | claim-safe                         |
+|      8192 | tf200             |   6 |       0.725  |       0.6167 |        0.825  |             0.7344 |            0.9907 | claim-safe                         |
+|      8192 | tf600             |   8 |       0.975  |       0.95   |        0.9938 |             0.9766 |            1      | claim-safe                         |
+|     12288 | tf200             |   2 |       0.65   |       0.6    |        0.7    |             0.7437 |            1      | exploratory/low-n or mixed workers |
+|     12288 | tf600             |   2 |       0.95   |       0.9    |        1      |             0.9437 |            1      | exploratory/low-n or mixed workers |
+
+### Schedule effect: tf600 − tf200
+
+|   Seq len |   n tf600 |   n tf200 |   Exact gap |   95% CI low |   95% CI high |   Permutation p |   Cliff's delta | Status                             |
+|----------:|----------:|----------:|------------:|-------------:|--------------:|----------------:|----------------:|:-----------------------------------|
+|      4096 |         8 |         4 |      0.1937 |       0.0781 |        0.3344 |          0.004  |          1      | claim-safe                         |
+|      8192 |         8 |         6 |      0.25   |       0.1458 |        0.3625 |          0.0013 |          0.9792 | claim-safe                         |
+|     12288 |         2 |         2 |      0.3    |       0.2    |        0.4    |          0.3333 |          1      | exploratory/low-n or mixed workers |
+
+![Metric heatmap](results/figures/research_grade/fig_rg_09_metric_heatmap.png)
+
+---
+
+## Mechanism diagnosis
+
+The long-context stress matrix separates three different things that simple bar charts hide:
+
+1. **Exact answer recall**: whether the final answer token is correct.
+2. **Retrieval top-1**: whether the correct fact is retrieved.
+3. **Writer true-fact rate**: whether the model wrote useful facts into memory.
+
+The important pattern is that retrieval remains very high while tf200 loses exact recall and writer quality. That is why the main v2 diagnosis is writer drift, not retrieval collapse.
+
+![Writer quality versus exact recall](results/figures/research_grade/fig_rg_04_writer_quality_vs_exact.png)
+
+![Retrieval saturated failure analysis](results/figures/research_grade/fig_rg_05_retrieval_saturated_failure.png)
+
+---
+
+## Training dynamics
+
+The training dynamics figure shows raw step logs plus LOWESS-smoothed trends. The vertical dotted line marks the step-200 teacher-forcing cutoff. The pattern is used as a diagnostic, not as causal proof by itself.
+
+![Training dynamics](results/figures/research_grade/fig_rg_06_training_dynamics_lowess.png)
+
+---
+
+## Distribution and systems views
+
+The ECDF figure shows every run without binning. The Pareto figure shows practical cost signals, including VRAM and wall time. Mixed-worker results are treated as sensitivity checks, not as the primary claim set.
+
+![Seed distribution ECDF](results/figures/research_grade/fig_rg_07_seed_distribution_ecdf.png)
+
+![Cost performance Pareto](results/figures/research_grade/fig_rg_08_cost_performance_pareto.png)
+
+An interactive parallel-coordinates dashboard is generated at:
+
+```text
+results/figures/research_grade/interactive/hpm_v2_long_context_parallel_coordinates.html
+```
+
+---
+
+## Benchmark
 
 The task is intentionally simple:
 
@@ -68,14 +121,14 @@ ANSWER v19
 
 The model is scored only at the answer position. The important difficulty is distance: the relevant fact can be far outside the local attention window.
 
-Main long-context setting:
-
 ```text
-sequence length = 2048
-local window    = 256
+local window = 256
+stress lengths = 4096, 8192, 12288
 ```
 
-A local Transformer cannot directly attend back to many earlier facts at answer time. HPM-Lite must learn to write useful facts into memory, retrieve them later, and route the retrieved memory into prediction.
+A fixed-window local model cannot directly attend back to many earlier facts at answer time. HPM-Lite must write useful facts into memory, retrieve them later, and route the retrieved memory into prediction.
+
+![Model and task schematic](results/figures/research_grade/fig_rg_01_model_task_schematic.png)
 
 ---
 
@@ -85,9 +138,9 @@ A local Transformer cannot directly attend back to many earlier facts at answer 
 
 HPM-Lite v1 combines three paths:
 
-1. **Local path** for nearby token mixing.
-2. **Recurrent path** for compressed stream state.
-3. **Episodic path** for sparse key-value memory retrieval.
+1. local path for nearby token mixing,
+2. recurrent path for compressed stream state,
+3. episodic path for sparse key-value memory retrieval.
 
 A learned router mixes the paths before prediction:
 
@@ -101,110 +154,24 @@ m_t   = alpha_l*l_t + alpha_r*r_t + alpha_e*e_t
 p(y)  = softmax(W_o m_t)
 ```
 
-![HPM-Lite model and task schematic](results/figures/paper/fig_01_model_task_schematic.png)
-
 ### HPM-Lite v2
 
-HPM-Lite v2 is the experimental path for a richer memory hierarchy:
+HPM-Lite v2 adds a richer experimental memory hierarchy:
 
-1. **Local path**: short-range mixing.
-2. **Selective recurrent path**: input-conditioned stream memory.
-3. **Fast-weight memory path**: associative matrix-style memory updates.
-4. **Episodic path**: sparse exact key-value retrieval.
-5. **Router**: learns how much each path contributes.
-6. **JEPA-lite auxiliary module**: latent future-block prediction support, kept separate from exact fact storage.
+1. local path,
+2. selective recurrent path,
+3. fast-weight associative memory path,
+4. episodic sparse retrieval path,
+5. 4-path router,
+6. JEPA-lite auxiliary support kept separate from exact fact storage.
 
 The v2 goal is not to instantly beat v1 everywhere. The goal is to turn the toy memory proof into a more modular memory architecture that can later attach to small LLMs as a memory adapter.
 
 ---
 
-## Diagnostics, not just scores
+## Reproducibility
 
-The project tracks more than exact accuracy:
-
-* answer exact accuracy
-* answer cross-entropy
-* retrieval top-1 / top-k
-* true fact written rate
-* missed fact rate
-* false write rate
-* written slots per sample
-* retrieval margin
-* parameters
-* VRAM
-* wall time
-* examples/sec
-* step-level training logs
-
-![Writer and retrieval diagnostics](results/figures/paper/fig_03_writer_retrieval_diagnostics.png)
-
-The main v1 diagnostic story: once useful facts are written, retrieval is reliable; remaining HPM errors mostly line up with write misses rather than retrieval failure.
-
-The main v2 diagnostic story so far: 512-token behavior is stable, while 2048-token behavior depends strongly on the writer-supervision schedule.
-
----
-
-## Advanced research figures
-
-The advanced figure set is meant for auditing the model behavior, not just showing a headline score.
-
-### Raw seed-level exact accuracy
-
-![Advanced raw seed-level exact accuracy](results/figures/advanced/fig_adv_01_exact_raw_seed_points.png)
-
-Shows raw seed points, mean, and sample standard deviation instead of hiding the result behind one bar.
-
-### Writer error decomposition
-
-![Advanced writer error decomposition](results/figures/advanced/fig_adv_02_writer_error_decomposition.png)
-
-Separates true fact writes, missed facts, and false writes. This matters because the main v2 failure mode at 2048 was writer drift, not retrieval collapse.
-
-### Writer success versus exact recall
-
-![Advanced writer success versus exact recall](results/figures/advanced/fig_adv_03_writer_success_vs_exact.png)
-
-Checks whether answer accuracy tracks writer quality across runs.
-
-### Efficiency frontier
-
-![Advanced efficiency frontier](results/figures/advanced/fig_adv_04_efficiency_frontier.png)
-
-Compares exact accuracy against practical cost signals such as parameters, VRAM, and wall time. Wall time and VRAM are diagnostic only when runs use comparable hardware.
-
-### Training dynamics
-
-![Advanced training dynamics](results/figures/advanced/fig_adv_05_training_dynamics.png)
-
-Shows step-level exact accuracy, CE, and writer recall when step logs are available.
-
-Generate the advanced figure set with:
-
-```bash
-python scripts/make_advanced_research_figures.py
-```
-
-Expected outputs:
-
-```text
-results/figures/advanced/
-results/processed/advanced_research_stats.csv
-```
-
-Figure design rules used here:
-
-* show raw seed points where possible
-* label sample size explicitly
-* define what error bars mean
-* avoid using local-model writer fields as meaningful diagnostics
-* export PNG, SVG, and PDF
-* separate headline figures from exploratory diagnostics
-
----
-
-## Quick start
-
-Install requirements:
+Install dependencies:
 
 ```bash
 pip install -r requirements.txt
@@ -216,130 +183,30 @@ Run tests:
 python -m pytest -q
 ```
 
-Regenerate paper-style figures:
+Regenerate the full research-grade figure suite:
 
 ```bash
-python scripts/make_research_figures.py
+python scripts/reset_research_grade_figures.py
 ```
 
-Regenerate advanced diagnostic figures:
-
-```bash
-python scripts/make_advanced_research_figures.py
-```
+The reset script intentionally replaces the previous figure system. Older figure scripts now delegate to `scripts/make_research_grade_figures.py`.
 
 ---
 
-## Reproducing key runs
-
-### HPM-Lite v2 512-token sweep command
-
-```bash
-python -u scripts/run_memory_model.py \
-  --models hpm_lite_v2 \
-  --seq-len 512 \
-  --window 256 \
-  --d-model 128 \
-  --layers 1 \
-  --heads 4 \
-  --steps 600 \
-  --batch-size 16 \
-  --device cuda \
-  --memory-null-slot \
-  --write-mode learned \
-  --learned-writer-teacher-forcing-steps 200 \
-  --lambda-writer 0.3 \
-  --log-every 50 \
-  --save-step-log \
-  --record-vram \
-  --save-checkpoint false \
-  --summary-csv results/raw/hpm_v2_512_seed0.csv \
-  --seed 0
-```
-
-Repeat with `--seed 1` and `--seed 2` for the tracked 512-token sweep.
-
-### HPM-Lite v2 2048-token fixed-writer command
-
-This is the current recommended 2048-token v2 recipe:
-
-```bash
-python -u scripts/run_memory_model.py \
-  --models hpm_lite_v2 \
-  --seq-len 2048 \
-  --window 256 \
-  --d-model 128 \
-  --layers 1 \
-  --heads 4 \
-  --steps 600 \
-  --batch-size 8 \
-  --device cuda \
-  --memory-null-slot \
-  --write-mode learned \
-  --learned-writer-teacher-forcing-steps 600 \
-  --lambda-writer 0.3 \
-  --log-every 50 \
-  --save-step-log \
-  --record-vram \
-  --save-checkpoint false \
-  --summary-csv results/raw/hpm_v2_2048_seed0_tf600_lw03.csv \
-  --seed 0
-```
-
-### HPM-Lite v1 2048 learned-writer command
-
-```bash
-python -u scripts/run_memory_model.py \
-  --models hpm_lite \
-  --seq-len 2048 \
-  --window 256 \
-  --d-model 128 \
-  --layers 1 \
-  --heads 4 \
-  --steps 600 \
-  --batch-size 8 \
-  --device cuda \
-  --memory-null-slot \
-  --write-mode learned \
-  --learned-writer-teacher-forcing-steps 200 \
-  --lambda-writer 0.3 \
-  --log-every 100 \
-  --save-step-log \
-  --record-vram \
-  --seed 0
-```
-
----
-
-## Repository map
+## Important generated files
 
 ```text
-hpm_lite/                         model, memory, training, and evaluation code
-scripts/run_memory_model.py        main experiment runner
-scripts/make_research_figures.py   paper-style figure generation
-scripts/make_advanced_research_figures.py
-                                  advanced diagnostic figures
-tests/                            unit and integration tests
-results/processed/                seed-sweep CSVs used for figures
-results/figures/paper/            publication-style figure set
-results/figures/advanced/         advanced diagnostic figure set
-docs/                             audits, notes, and design rationale
-```
-
-Important files:
-
-```text
-hpm_lite/model.py
-hpm_lite/hpm_v2.py
-hpm_lite/hpm_v2_model.py
-hpm_lite/train.py
-hpm_lite/evaluate.py
-tests/test_hpm_v2_modules.py
-tests/test_hpm_v2_training_integration.py
-results/processed/learned_writer_2048_seed_sweep.csv
-results/processed/local_2048_seed_sweep.csv
-results/processed/hpm_v2_512_seed_sweep.csv
-results/processed/hpm_v2_2048_tf600_lw03_seed_sweep.csv
+scripts/make_research_grade_figures.py
+scripts/reset_research_grade_figures.py
+results/processed/research_grade/hpm_v2_research_grade_run_matrix.csv
+results/processed/research_grade/hpm_v2_research_grade_inference_summary.csv
+results/processed/research_grade/hpm_v2_research_grade_schedule_effects.csv
+results/processed/research_grade/hpm_v2_research_grade_failure_model.csv
+results/processed/research_grade/hpm_v2_research_grade_training_dynamics.csv
+results/figures/research_grade/research_grade_figure_manifest.csv
+docs/research_grade_statistics_methods.md
+docs/research_grade_results.md
+docs/legacy_graph_retirement_manifest.md
 ```
 
 ---
@@ -353,11 +220,11 @@ This repo does **not** claim:
 * Synthetic KV recall is the same as real-world reasoning.
 * The current learned writer is final.
 * JEPA-lite is proven useful yet.
-* v2 is fully validated at 2048 over a complete seed sweep yet.
+* 12288-token behavior is fully validated; current 12288 rows are promising but low-n.
 
 The honest claim is narrower:
 
-> Explicit learned write/retrieve memory can make a small model solve a long-range exact-recall task that a fixed-window local Transformer baseline fails under the tested setting.
+> Explicit learned write/retrieve memory can make a small model solve a long-range exact-recall task that a fixed-window local Transformer baseline fails under the tested setting; in HPM-Lite v2, long-context reliability is strongly controlled by the writer-supervision schedule.
 
 ---
 
@@ -365,46 +232,37 @@ The honest claim is narrower:
 
 Near-term:
 
-1. Import tracked fixed-config v2 2048 seeds 1/2.
-2. Run v2 2048 tf600/lw0.3 over 3 clean seeds.
-3. Add ablations:
-
-   * no episodic memory
-   * no fast-weight path
-   * no selective recurrent path
-   * router disabled
-   * oracle writer vs learned writer
-4. Build an HPM-to-small-LLM memory adapter:
-
-   * LLM alone
-   * LLM + naive retrieval
-   * LLM + HPM retrieval
-5. Add a technical report and short demo.
+1. Add more 12288-token seeds.
+2. Add local baseline stress runs at 4096/8192/12288.
+3. Add real v2 ablations:
+   * no episodic memory,
+   * no fast-weight path,
+   * no selective recurrent path,
+   * router disabled,
+   * oracle writer vs learned writer.
+4. Add per-example prediction logs so failure analysis can move beyond aggregate-run statistics.
+5. Build an HPM-to-small-LLM memory adapter benchmark:
+   * LLM alone,
+   * LLM + naive retrieval,
+   * LLM + HPM retrieval.
 
 Longer-term:
 
-* natural-language KV recall
-* multi-hop recall
-* entity-state tracking
-* long-document planted-fact QA
-* soft-prompt memory adapter for a frozen 1B–3B open LLM
-
----
-
-## Resume version
-
-A concise description of this project:
-
-> Built HPM-Lite, a PyTorch research prototype for long-range memory in small neural models. Implemented learned episodic writing/retrieval, recurrent and fast-weight memory paths, path routing, reproducible seed sweeps, CUDA experiment logging, and research-style figures. Demonstrated strong synthetic long-range KV recall versus a fixed-window local Transformer baseline, and diagnosed/fixed HPM-Lite v2 writer drift at 2048 tokens by extending writer supervision.
+* natural-language KV recall,
+* multi-hop recall,
+* entity-state tracking,
+* long-document planted-fact QA,
+* soft-prompt memory adapter for a frozen 1B–3B open LLM.
 
 ---
 
 ## Research integrity notes
 
-This README is intentionally conservative. Results are separated into:
+The project separates results into:
 
-* **tracked processed seed sweeps** for headline claims,
-* **single-run fixed-config evidence** for new v2 behavior,
-* **development observations** that need to be imported before becoming official claims.
+* **canonical Kaggle rows** for the main long-context claim,
+* **all-worker sensitivity rows** for mixed Kaggle/PC checks,
+* **low-n exploratory rows** for promising but under-sampled settings,
+* **diagnostic plots** for mechanism discovery, not overclaiming.
 
-That separation is part of the project. The goal is not to make the numbers look bigger. The goal is to make the evidence easy to audit.
+The goal is not to make the numbers look bigger. The goal is to make the evidence easier to audit.
