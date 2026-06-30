@@ -196,6 +196,23 @@ docs/research_grade_results.md
 tests/                             unit and integration tests
 ```
 
+
+## Model files
+
+The repository keeps the original compact HPM-Lite implementation and the newer v2 implementation side by side:
+
+- `hpm_lite/model.py` contains the original HPM-Lite model used for the first learned-writer KV-recall experiments.
+- `hpm_lite/hpm_v2.py` contains the v2 memory components: selective recurrence, fast-weight memory, episodic retrieval, and routing utilities.
+- `hpm_lite/hpm_v2_model.py` wraps the v2 components into a trainable/evaluable model interface.
+
+For figure generation, use the canonical entry point:
+
+```bash
+python scripts/make_figures.py
+```
+
+Older `make_*_figures.py` scripts are retained only for compatibility with previous experiment snapshots.
+
 ## Main files
 
 ```text
@@ -246,4 +263,4 @@ No formal paper release yet. Cite the repository directly if you use the code or
 
 ## License
 
-No license has been declared yet. Treat the repository as source-available unless a license is added.
+This repository is released under the MIT License. See `LICENSE`.
