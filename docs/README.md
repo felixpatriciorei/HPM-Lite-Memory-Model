@@ -29,3 +29,14 @@ This folder is organized by purpose.
 ## Run logs
 
 `docs/run_logs/` contains historical run logs.
+
+## Advanced atlas
+
+`docs/figures/advanced_research_atlas.md` summarizes the advanced graph/statistics refresh.
+The generated figures live in `results/figures/advanced_atlas/`, and processed tables live in `results/processed/advanced_atlas/`.
+
+Run everything with:
+
+```bash
+python scripts/make_figures.py
+```

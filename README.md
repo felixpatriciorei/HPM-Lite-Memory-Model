@@ -213,6 +213,21 @@ python scripts/make_figures.py
 
 Older `make_*_figures.py` entry points have been archived under `scripts/legacy_figures/` to keep the top-level scripts directory focused.
 
+Advanced graph/statistics atlas:
+
+```bash
+python scripts/make_advanced_research_atlas.py
+```
+
+Outputs:
+
+```text
+results/figures/advanced_atlas/
+results/processed/advanced_atlas/
+docs/figures/advanced_research_atlas.md
+```
+
+
 ## Main files
 
 ```text
