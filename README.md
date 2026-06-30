@@ -211,7 +211,7 @@ For figure generation, use the canonical entry point:
 python scripts/make_figures.py
 ```
 
-Older `make_*_figures.py` scripts are retained only for compatibility with previous experiment snapshots.
+Older `make_*_figures.py` entry points have been archived under `scripts/legacy_figures/` to keep the top-level scripts directory focused.
 
 ## Main files
 
