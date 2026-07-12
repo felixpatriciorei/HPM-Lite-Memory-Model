@@ -2232,12 +2232,16 @@ class ContextualTupleEdgeScorer(nn.Module):
         candidate_loss_weight: float = 1.0,
         tuple_loss_weight: float = 1.0,
         rank_loss_weight: float = 0.5,
+        tuple_pruning: str = "none",
+        pair_beam_size: int = 8,
     ) -> torch.Tensor:
         candidate_loss = self.proposer.loss(batch)
         scores, _, tuple_mask, candidate_positions, _ = self.score_tuples(
             batch,
             candidate_k,
             "oracle_candidates_plus_noise",
+            tuple_pruning=tuple_pruning,
+            pair_beam_size=pair_beam_size,
         )
         labels = torch.zeros_like(scores)
         for b in range(scores.size(0)):
@@ -2607,6 +2611,22 @@ class ContextualTupleEdgeScorer(nn.Module):
                 }
             )
         return examples
+
+
+def save_writer_v4_checkpoint(path: str, model: "ContextualTupleEdgeScorer", config: dict) -> None:
+    """Save a trained Writer V4 to disk: weights + the config dict you used
+    to construct it (the same kwargs you passed to ContextualTupleEdgeScorer(...),
+    e.g. {"max_slots": 8, "seq_len": 512, "has_condition": True}).
+    Use load_writer_v4_checkpoint to get it back."""
+    torch.save({"state_dict": model.state_dict(), "config": config}, path)
+
+
+def load_writer_v4_checkpoint(path: str, map_location: str = "cpu") -> "ContextualTupleEdgeScorer":
+    """Rebuild a Writer V4 exactly as it was saved by save_writer_v4_checkpoint."""
+    payload = torch.load(path, map_location=map_location)
+    model = ContextualTupleEdgeScorer(**payload["config"])
+    model.load_state_dict(payload["state_dict"])
+    return model
 
 
 def _field_tokens(batch: Dict[str, torch.Tensor], positions: torch.Tensor) -> torch.Tensor:

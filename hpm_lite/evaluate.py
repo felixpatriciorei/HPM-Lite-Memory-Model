@@ -20,7 +20,7 @@ from .metrics import (
 )
 from .model import HpmLiteConfig, HpmLiteModel
 from .utils import resolve_device, set_seed, str_to_bool
-from .write_modes import apply_write_mode, batch_from_memory_selection, writer_metrics
+from .write_modes import apply_write_mode, batch_from_memory_selection, batch_from_v4_writer, writer_metrics
 
 
 @torch.no_grad()
@@ -35,6 +35,8 @@ def evaluate_batches(
     memory_control: str = "normal",
     write_mode: str = "oracle",
     use_learned_writer: bool = False,
+    v4_model=None,
+    v4_candidate_k: int = 10,
 ) -> Dict[str, float]:
     model.eval()
     start_time = time.perf_counter()
@@ -65,7 +67,10 @@ def evaluate_batches(
 
     for _ in range(batches):
         batch = dataset.sample_batch(batch_size, device=device)
-        batch, write_stats = apply_write_mode(batch, write_mode)
+        if write_mode == "v4_writer":
+            batch, write_stats = batch_from_v4_writer(batch, v4_model, v4_candidate_k)
+        else:
+            batch, write_stats = apply_write_mode(batch, write_mode)
         output = model(
             batch["input_ids"],
             memory_token_positions=batch["memory_token_positions"],

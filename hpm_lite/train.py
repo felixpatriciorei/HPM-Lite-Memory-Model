@@ -18,7 +18,7 @@ from .metrics import answer_cross_entropy, answer_span_exact_accuracy, count_par
 from .model import HpmLiteConfig, HpmLiteModel
 from .hpm_v2_model import HpmLiteV2Config, HpmLiteV2Model
 from .utils import ensure_dir, resolve_device, set_seed, str_to_bool, timestamp, write_json
-from .write_modes import apply_write_mode, batch_from_memory_selection, writer_metrics
+from .write_modes import apply_write_mode, batch_from_memory_selection, batch_from_v4_writer, writer_metrics
 
 
 class TinyAdamW:
@@ -80,6 +80,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "conditional_positive_only",
             "conditional_contrastive",
             "longhop",
+            "noisy_conditional",
         ],
         default="kv",
     )
@@ -106,9 +107,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["normal", "shuffle_values", "shuffled_values", "random_keys", "corrupt_values", "no_retrieval"],
         default="normal",
     )
-    parser.add_argument("--write-mode", choices=["oracle", "fact_token", "random_write", "learned"], default="oracle")
+    parser.add_argument("--write-mode", choices=["oracle", "fact_token", "random_write", "learned", "v4_writer"], default="oracle")
+    parser.add_argument("--v4-writer-checkpoint", type=str, default="")
+    parser.add_argument("--v4-candidate-k", type=int, default=10)
     parser.add_argument("--oracle-memory", type=str_to_bool, default=True)
     parser.add_argument("--num-facts", type=int, default=4)
+    parser.add_argument("--num-hard-negatives", type=int, default=0)
     parser.add_argument("--repeated-keys", type=str_to_bool, default=False)
     parser.add_argument("--similar-values", type=str_to_bool, default=False)
     parser.add_argument("--distractor-fact-spans", type=int, default=0)
@@ -250,6 +254,7 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
             window=args.window,
             task=args.task,
             num_facts=args.num_facts,
+            num_hard_negatives=args.num_hard_negatives,
             seed=args.seed,
             oracle_memory=args.oracle_memory,
             repeated_keys=args.repeated_keys,
@@ -265,6 +270,7 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
             window=args.window,
             task=args.task,
             num_facts=args.num_facts,
+            num_hard_negatives=args.num_hard_negatives,
             seed=args.seed + 100_000,
             oracle_memory=args.oracle_memory,
             repeated_keys=args.repeated_keys,
@@ -276,6 +282,25 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
     )
     model = make_model(args, device)
     optimizer = TinyAdamW(model.parameters(), lr=args.lr)
+
+    v4_writer_model = None
+    if args.write_mode == "v4_writer":
+        if not args.v4_writer_checkpoint:
+            raise ValueError("--write-mode v4_writer requires --v4-writer-checkpoint PATH")
+        from .noisy_extraction import load_writer_v4_checkpoint
+
+        v4_writer_model = load_writer_v4_checkpoint(args.v4_writer_checkpoint, map_location=str(device)).to(device)
+        v4_writer_model.eval()
+        if v4_writer_model.max_slots != args.num_facts:
+            raise ValueError(
+                f"--v4-writer-checkpoint was trained with max_slots={v4_writer_model.max_slots}, "
+                f"but this run uses --num-facts={args.num_facts}. These must match."
+            )
+        if v4_writer_model.seq_len != args.seq_len:
+            raise ValueError(
+                f"--v4-writer-checkpoint was trained with seq_len={v4_writer_model.seq_len}, "
+                f"but this run uses --seq-len={args.seq_len}. These must match."
+            )
 
     if args.log_every and args.log_every > 0:
         args.eval_every = args.log_every
@@ -289,7 +314,10 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
     for step in range(1, args.steps + 1):
         model.train()
         batch = train_dataset.sample_batch(args.batch_size, device=device)
-        batch, write_stats = apply_write_mode(batch, args.write_mode)
+        if args.write_mode == "v4_writer":
+            batch, write_stats = batch_from_v4_writer(batch, v4_writer_model, args.v4_candidate_k)
+        else:
+            batch, write_stats = apply_write_mode(batch, args.write_mode)
         learned_writer = args.write_mode == "learned"
         teacher_forcing = learned_writer and step <= args.learned_writer_teacher_forcing_steps
         output = model(
@@ -352,6 +380,8 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
                 memory_control=args.memory_control,
                 write_mode=args.write_mode,
                 use_learned_writer=learned_writer,
+                v4_model=v4_writer_model,
+                v4_candidate_k=args.v4_candidate_k,
             )
             peak_vram = peak_vram_mb(device) if args.record_vram else 0.0
             final_metrics = {
@@ -389,8 +419,10 @@ def run_training(args: argparse.Namespace | SimpleNamespace) -> Dict[str, Any]:
             }
             if "eval_retrieval_top1" in final_metrics:
                 compact["eval_ret_top1"] = round(final_metrics["eval_retrieval_top1"], 4)
-            if learned_writer:
-                compact["writer_recall"] = round(final_metrics.get("train_writer_true_fact_written_rate", 0.0), 4)
+            if learned_writer or args.write_mode == "v4_writer":
+                compact["writer_true_fact_rate"] = round(final_metrics.get("eval_true_fact_written_rate", 0.0), 4)
+                compact["writer_false_write_rate"] = round(final_metrics.get("eval_false_write_rate", 0.0), 4)
+                compact["writer_missed_fact_rate"] = round(final_metrics.get("eval_missed_fact_rate", 0.0), 4)
             print(json.dumps(compact, sort_keys=True))
 
     total_time = time.perf_counter() - start_time

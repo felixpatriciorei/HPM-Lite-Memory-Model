@@ -148,6 +148,34 @@ def batch_from_memory_selection(
     return rewritten
 
 
+def batch_from_v4_writer(
+    oracle: Dict[str, torch.Tensor],
+    v4_model,
+    candidate_k,
+    decode_mode: str = "threshold",
+) -> Tuple[Dict[str, torch.Tensor], Dict[str, float]]:
+    """Same idea as batch_from_memory_selection, but for a trained Writer V4
+    (ContextualTupleEdgeScorer) instead of the in-model SupervisedMemoryWriter.
+
+    Unlike batch_from_memory_selection, this carries condition positions
+    through (V4 predicts (key, condition, value) triples, not just pairs).
+    v4_model is expected to already be trained and in eval() mode -- this
+    function does not train it and does not track gradients through it.
+    """
+    v4_model.eval()
+    with torch.no_grad():
+        written = v4_model.predict_batch(oracle, candidate_k, "learned_candidates", decode_mode=decode_mode)
+
+    rewritten = clone_batch(oracle)
+    rewritten["memory_token_positions"] = written["memory_token_positions"].detach().clone()
+    rewritten["memory_mask"] = written["memory_mask"].detach().clone()
+    rewritten["memory_spans"] = written["memory_spans"].detach().clone()
+    rewritten["memory_condition_positions"] = written["memory_condition_positions"].detach().clone()
+    update_positive_indices(rewritten, oracle)
+    assert_pre_query_writes(rewritten)
+    return rewritten, writer_metrics(oracle, rewritten)
+
+
 def update_positive_indices(rewritten: Dict[str, torch.Tensor], oracle: Dict[str, torch.Tensor]) -> None:
     bsz, slots, _ = rewritten["memory_token_positions"].shape
     positive = torch.full_like(oracle["positive_memory_indices"], -1)
