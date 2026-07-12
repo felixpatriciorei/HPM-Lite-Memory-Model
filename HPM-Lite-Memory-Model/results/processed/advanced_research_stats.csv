@@ -1,6 +1,0 @@
-dataset,n,seq_len,model,write_mode,mean_exact,sd_exact,min_exact,max_exact,mean_ce,sd_ce,mean_retrieval_top1,mean_true_fact_written_rate,mean_false_write_rate,mean_missed_fact_rate,mean_wall_time_sec,mean_peak_vram_mb,mean_params,source_files
-v1 HPM 512,3,512,hpm_lite,learned,1,0,1,1,2.48353e-10,4.30159e-10,1,0.998437,0.0015625,0.0015625,171.448,4251.98,721543,results\processed\learned_writer_512_seed_sweep.csv
-v1 HPM 2048,3,2048,hpm_lite,learned,0.983333,0.0144338,0.975,1,0.494269,0.634042,1,0.9875,0.0125,0.0125,4791.4,8393.53,721671,results\processed\learned_writer_2048_seed_sweep.csv
-v1 Local 2048,4,2048,local,oracle,0.003125,0.00625,0,0.0125,6.9785,0.368387,,1,0,0,344.827,8381.88,522242,results\processed\local_2048_seed_sweep.csv
-v2 HPM 512,3,512,hpm_lite_v2,learned,0.985417,0.0157288,0.96875,1,0.273722,0.247537,1,0.988021,0.0119792,0.0119792,194.48,4248.86,789000,results\processed\hpm_v2_512_seed_sweep.csv
-v2 HPM 2048 tf600,1,2048,hpm_lite_v2,learned,1,,1,1,0,,1,1,0,0,7835.55,8386.6,789128,results\processed\hpm_v2_2048_tf600_lw03_seed_sweep.csv

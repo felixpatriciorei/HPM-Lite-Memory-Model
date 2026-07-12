@@ -1,3 +1,0 @@
-model,eval_answer_exact,eval_answer_ce,eval_retrieval_top1,eval_retrieval_topk,eval_avg_written_slots,eval_true_fact_written_rate,eval_false_write_rate,eval_missed_fact_rate,parameters,train_wall_time_sec,run_dir
-local,0.0,6.628998756408691,,,8.0,1.0,0.0,0.0,522242,4740.431897399998,runs\memory_model\20260627_201743_local_kv_seed0
-hpm_lite,1.0,1.3231530829216353e-06,1.0,1.0,8.0,0.99375,0.00625,0.00625,721671,5137.639028700003,runs\memory_model\20260627_213643_hpm_lite_kv_seed1
