@@ -1,0 +1,3 @@
+model,eval_answer_exact,eval_answer_ce,eval_retrieval_top1,eval_retrieval_topk,parameters,train_wall_time_sec,run_dir
+local,0.0,23.87079429626465,,,944642,79.5683410000056,runs\memory_model\20260627_182625_local_kv_seed0
+hpm_lite,1.0,0.0,1.0,1.0,1047750,80.48898080000072,runs\memory_model\20260627_182745_hpm_lite_kv_seed1

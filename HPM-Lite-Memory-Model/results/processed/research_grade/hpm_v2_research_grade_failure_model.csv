@@ -1,0 +1,6 @@
+model,term,coefficient,ci95_low,ci95_high,p_value,n,r_squared,note
+"OLS exact ~ writer + retrieval + length + tf600, HC3 robust SE",const,-2.326553796469319,-5.829587648863744,1.176480055925106,0.19301285977833293,38,0.791701438692985,exploratory aggregate-run regression; not causal proof
+"OLS exact ~ writer + retrieval + length + tf600, HC3 robust SE",eval_true_fact_written_rate,1.3429101855296532,0.6126940432861264,2.07312632777318,0.00031276844374793407,38,0.791701438692985,exploratory aggregate-run regression; not causal proof
+"OLS exact ~ writer + retrieval + length + tf600, HC3 robust SE",eval_retrieval_top1,1.681318726696246,-1.7278749094396915,5.090512362832183,0.333744389279911,38,0.791701438692985,exploratory aggregate-run regression; not causal proof
+"OLS exact ~ writer + retrieval + length + tf600, HC3 robust SE",log2_seq_len,0.02740611235190138,-0.020728896107959013,0.07554112081176177,0.2644548278640898,38,0.791701438692985,exploratory aggregate-run regression; not causal proof
+"OLS exact ~ writer + retrieval + length + tf600, HC3 robust SE",tf600_indicator,-0.038977325811879404,-0.1703216593055387,0.09236700768177988,0.5608141352081804,38,0.791701438692985,exploratory aggregate-run regression; not causal proof

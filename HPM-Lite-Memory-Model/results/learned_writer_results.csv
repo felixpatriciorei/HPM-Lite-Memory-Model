@@ -1,0 +1,3 @@
+distance,window,local_exact,hpm_exact,local_ce,hpm_ce,writer_recall,retrieval_top1,steps,batch_size,d_model,status
+512,256,0.0125,1.0,6.2697,0.0,0.9922,1.0,600,16,128,completed
+2048,256,0.0,1.0,6.629,1.323153e-06,0.99375,1.0,600,8,128,completed
