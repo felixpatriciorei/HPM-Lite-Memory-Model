@@ -39,3 +39,4 @@ checkpoints/
 Thumbs.db
 .idea/
 .vscode/
+check_held_out_template.py 
